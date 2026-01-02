@@ -9,13 +9,74 @@
     {
       "id": "ad_panchangam",
       "title": "Daily Panchangam",
-      "subtitle": "Tithi • Nakshatra • Rahu Kalam",
+      "subtitle": "Tithi • Nakshatra • Rahu Kalam • Sunrise",
       "bg": ["#0B1026", "#24114D"],
       "ctaText": "Open",
-      "action": {
-        "type": "route",
-        "value": "PanchangamScreen"
-      }
+      "tag": "DAILY",
+      "action": { "type": "route", "value": "PanchangamScreen" }
+    },
+    {
+      "id": "ad_wallpaper",
+      "title": "Daily Cosmic Wallpaper",
+      "subtitle": "New wallpaper every day • HD",
+      "bg": ["#070A1A", "#3B1D5A"],
+      "ctaText": "View",
+      "tag": "NEW",
+      "action": { "type": "route", "value": "DailyWallpaperScreen" }
+    },
+    {
+      "id": "ad_remedies",
+      "title": "Powerful Remedies",
+      "subtitle": "Lal Kitab • Vastu • Mantra • Upayalu",
+      "bg": ["#0A0B16", "#4A2C12"],
+      "ctaText": "Explore",
+      "tag": "PRO",
+      "action": { "type": "route", "value": "RemediesScreen" }
+    },
+    {
+      "id": "ad_meet_astrologer",
+      "title": "Meet Your Astrologer",
+      "subtitle": "Book a call • Chat • Guidance",
+      "bg": ["#07111F", "#1B3A5E"],
+      "ctaText": "Book",
+      "tag": "LIVE",
+      "action": { "type": "route", "value": "MeetAstrologerScreen" }
+    },
+    {
+      "id": "ad_matchmaking",
+      "title": "Match Making",
+      "subtitle": "Compatibility • Doshas • Score",
+      "bg": ["#0C0A17", "#5A1230"],
+      "ctaText": "Check",
+      "tag": "TOP",
+      "action": { "type": "route", "value": "MatchMakingScreen" }
+    },
+    {
+      "id": "ad_kp_rashiphal",
+      "title": "KP Rashi Phal",
+      "subtitle": "Daily • Weekly • Monthly",
+      "bg": ["#081021", "#274A7D"],
+      "ctaText": "Read",
+      "tag": "TREND",
+      "action": { "type": "route", "value": "KPRashiPhalScreen" }
+    },
+    {
+      "id": "ad_store",
+      "title": "Astro Store",
+      "subtitle": "Yantra • Puja kits • Books",
+      "bg": ["#0B0D18", "#2C2A1B"],
+      "ctaText": "Shop",
+      "tag": "SALE",
+      "action": { "type": "route", "value": "AstroStoreScreen" }
+    },
+    {
+      "id": "ad_gems",
+      "title": "Gems & Rings",
+      "subtitle": "Gem guide • Rings • Metals",
+      "bg": ["#070B14", "#1D4C3A"],
+      "ctaText": "Open",
+      "tag": "GEMS",
+      "action": { "type": "route", "value": "GemsRingsScreen" }
     }
   ],
   "tiles": [
@@ -26,10 +87,70 @@
       "icon": "calendar-outline",
       "bg": ["#0B1026", "#2D1B69"],
       "badge": "HOT",
-      "action": {
-        "type": "route",
-        "value": "PanchangamScreen"
-      }
+      "action": { "type": "route", "value": "PanchangamScreen" }
+    },
+    {
+      "id": "daily_wallpaper",
+      "title": "Daily Wallpaper",
+      "subtitle": "Cosmic HD",
+      "icon": "image-outline",
+      "bg": ["#070A1A", "#3B1D5A"],
+      "badge": "NEW",
+      "action": { "type": "route", "value": "DailyWallpaperScreen" }
+    },
+    {
+      "id": "remedies",
+      "title": "Remedies",
+      "subtitle": "Upayalu",
+      "icon": "sparkles-outline",
+      "bg": ["#0A0B16", "#4A2C12"],
+      "badge": "PRO",
+      "action": { "type": "route", "value": "RemediesScreen" }
+    },
+    {
+      "id": "meet_astrologer",
+      "title": "Meet Astrologer",
+      "subtitle": "Book",
+      "icon": "chatbubbles-outline",
+      "bg": ["#07111F", "#1B3A5E"],
+      "badge": "LIVE",
+      "action": { "type": "route", "value": "MeetAstrologerScreen" }
+    },
+    {
+      "id": "match_making",
+      "title": "Match Making",
+      "subtitle": "Porutham",
+      "icon": "heart-outline",
+      "bg": ["#0C0A17", "#5A1230"],
+      "badge": "TOP",
+      "action": { "type": "route", "value": "MatchMakingScreen" }
+    },
+    {
+      "id": "kp_rashi_phal",
+      "title": "KP Rashi Phal",
+      "subtitle": "Predictions",
+      "icon": "star-outline",
+      "bg": ["#081021", "#274A7D"],
+      "badge": "TREND",
+      "action": { "type": "route", "value": "KPRashiPhalScreen" }
+    },
+    {
+      "id": "astro_store",
+      "title": "Astro Store",
+      "subtitle": "Shop",
+      "icon": "cart-outline",
+      "bg": ["#0B0D18", "#2C2A1B"],
+      "badge": "SALE",
+      "action": { "type": "route", "value": "AstroStoreScreen" }
+    },
+    {
+      "id": "gems_rings",
+      "title": "Gems & Rings",
+      "subtitle": "Guide",
+      "icon": "diamond-outline",
+      "bg": ["#070B14", "#1D4C3A"],
+      "badge": "GEMS",
+      "action": { "type": "route", "value": "GemsRingsScreen" }
     }
   ]
 }
