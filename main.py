@@ -1,4 +1,4 @@
-# app/main.py  ✅ (FULL REPLACE with ONLY the small fix: remove filename=)
+# main.py ✅ (FULL REPLACE) — Utilities JSON endpoint now serves INLINE JSON (no download)
 from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,9 +7,10 @@ from typing import Any, Dict, List, Optional
 import hashlib
 import time
 
-# ✅ NEW (ADD)
+# ✅ Editorial JSON (INLINE, no download)
 import os
-from fastapi.responses import FileResponse
+import json
+from fastapi.responses import JSONResponse
 
 from app.core.models import NASAReq, NASAResp
 from app.core.jd import local_to_utc_iso
@@ -60,17 +61,14 @@ def debug_routes():
     return [r.path for r in app.routes]
 
 # -------------------------------------------------
-# ✅ Editorial JSON content (Utilities)
+# ✅ Editorial JSON content (Utilities) — INLINE JSON (no download)
 # -------------------------------------------------
 @app.get("/content/utilities.json")
 def serve_utilities_json():
-    # repo: main.py at root + content/ folder at root
     file_path = os.path.join("content", "utilities.json")
-    # ✅ FIX: remove filename so browser opens as JSON instead of download
-    return FileResponse(
-        file_path,
-        media_type="application/json"
-    )
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return JSONResponse(content=data)
 
 # -------------------------------------------------
 # Utilities
@@ -216,7 +214,6 @@ class PanchangamReq(BaseModel):
 
 @app.post("/api/astro/panchangam")
 def astro_panchangam(req: PanchangamReq):
-    # Use SAME ayanamsa logic as home
     utc_iso = local_to_utc_iso(req.datetimeLocal, req.tz)
     jd_ut, _ = get_planets_ecliptic(utc_iso, req.lat, req.lon)
 
@@ -244,7 +241,7 @@ class HomeReq(BaseModel):
     nodeMode: Optional[bool] = True
     horaryOn: Optional[bool] = False
     horaryNumber: Optional[int] = 1
-    includeDasha: Optional[bool] = False  # ✅ keep fast default
+    includeDasha: Optional[bool] = False
 
 @app.post("/api/astro/home")
 def astro_home(req: HomeReq):
@@ -280,7 +277,6 @@ def astro_home(req: HomeReq):
             "occupies": [],
         })
 
-    # ✅ OUTSIDE the loop
     rahu_trop = float(mean_lunar_node_tropical_deg(jd_ut))
     ketu_trop = norm360(rahu_trop + 180.0)
 
@@ -302,9 +298,6 @@ def astro_home(req: HomeReq):
             "occupies": [],
         })
 
-    # -------------------------------------------------
-    # Placidus Bhava Cusps (SIDEREAL)
-    # -------------------------------------------------
     cusps_trop = placidus_cusps(jd_ut, req.lat, req.lon)
 
     cusps_sid: Dict[str, Any] = {}
@@ -351,7 +344,6 @@ def astro_home(req: HomeReq):
         "vimshottari": None,
         "rulingPlanets": None,
     }
-
     return resp
 
 # -------------------------------------------------
