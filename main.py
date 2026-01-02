@@ -1,4 +1,4 @@
-# app/main.py  ✅ (ONLY ADDITIONS INCLUDED, NO LOGIC CHANGES)
+# app/main.py  ✅ (FULL REPLACE with ONLY the small fix: remove filename=)
 from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,18 +60,16 @@ def debug_routes():
     return [r.path for r in app.routes]
 
 # -------------------------------------------------
-# ✅ NEW (ADD): Editorial JSON content (Utilities)
+# ✅ Editorial JSON content (Utilities)
 # -------------------------------------------------
 @app.get("/content/utilities.json")
 def serve_utilities_json():
-    # ✅ IMPORTANT:
-    # Your repo currently has: main.py at root + content/ folder at root
-    # So the file should be at: content/utilities.json
+    # repo: main.py at root + content/ folder at root
     file_path = os.path.join("content", "utilities.json")
+    # ✅ FIX: remove filename so browser opens as JSON instead of download
     return FileResponse(
         file_path,
-        media_type="application/json",
-        filename="utilities.json"
+        media_type="application/json"
     )
 
 # -------------------------------------------------
@@ -333,7 +331,6 @@ def astro_home(req: HomeReq):
             "subSubLord": "",
         })
 
-    # ✅ HOME should be FAST: Panchangam OFF by default
     resp = {
         "meta": {
             "source": "kp-nasa-backend",
@@ -347,10 +344,7 @@ def astro_home(req: HomeReq):
         },
         "ayanamsa": {"value": float(ayan), "name": ayan_name},
         "ayanamsaValueDeg": float(ayan),
-
-        # ✅ IMPORTANT: keep placeholder only
         "panchangam": None,
-
         "kundali": {"planets": kundali_planets, "bhavaCusps": bhava_cusps},
         "kp": {"ayanamsa": float(ayan), "grahaTable": kp_graha_table, "bhavaTable": kp_bhava_table},
         "dasha": None,
