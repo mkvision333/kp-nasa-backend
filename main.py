@@ -1,3 +1,4 @@
+# app/main.py  ✅ (ONLY ADDITIONS INCLUDED, NO LOGIC CHANGES)
 from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -5,6 +6,10 @@ from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 import hashlib
 import time
+
+# ✅ NEW (ADD)
+import os
+from fastapi.responses import FileResponse
 
 from app.core.models import NASAReq, NASAResp
 from app.core.jd import local_to_utc_iso
@@ -53,6 +58,21 @@ def health():
 @app.get("/debug/routes")
 def debug_routes():
     return [r.path for r in app.routes]
+
+# -------------------------------------------------
+# ✅ NEW (ADD): Editorial JSON content (Utilities)
+# -------------------------------------------------
+@app.get("/content/utilities.json")
+def serve_utilities_json():
+    # ✅ IMPORTANT:
+    # Your repo currently has: main.py at root + content/ folder at root
+    # So the file should be at: content/utilities.json
+    file_path = os.path.join("content", "utilities.json")
+    return FileResponse(
+        file_path,
+        media_type="application/json",
+        filename="utilities.json"
+    )
 
 # -------------------------------------------------
 # Utilities

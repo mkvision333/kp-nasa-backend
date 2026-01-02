@@ -1,0 +1,35 @@
+{
+  "meta": {
+    "version": 1,
+    "updatedAt": "2026-01-02",
+    "title": "Utilities",
+    "subtitle": "Astrology • Astronomy • Tradition"
+  },
+  "adBoards": [
+    {
+      "id": "ad_panchangam",
+      "title": "Daily Panchangam",
+      "subtitle": "Tithi • Nakshatra • Rahu Kalam",
+      "bg": ["#0B1026", "#24114D"],
+      "ctaText": "Open",
+      "action": {
+        "type": "route",
+        "value": "PanchangamScreen"
+      }
+    }
+  ],
+  "tiles": [
+    {
+      "id": "panchangam",
+      "title": "Panchangam",
+      "subtitle": "Daily timings",
+      "icon": "calendar-outline",
+      "bg": ["#0B1026", "#2D1B69"],
+      "badge": "HOT",
+      "action": {
+        "type": "route",
+        "value": "PanchangamScreen"
+      }
+    }
+  ]
+}
