@@ -1,4 +1,4 @@
-# main.py ✅ (FULL REPLACE) — Utilities JSON endpoint now serves INLINE JSON (no download)
+# main.py ✅ (FULL REPLACE) — Faster first tap: startup warm + 1-min bucket cache + home/nasa caching
 from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,6 +48,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -------------------------------------------------
+# ✅ Startup warm-up (reduces first tap 60s)
+# -------------------------------------------------
+@app.on_event("startup")
+def _startup_warm():
+    try:
+        utc_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        # warm skyfield / ephemeris kernel
+        get_planets_ecliptic(utc_iso, 0.0, 0.0)
+        # warm KP table calc
+        kp_star_sub_sub(0.0)
+        print("[STARTUP] warm ok", flush=True)
+    except Exception as e:
+        print(f"[STARTUP] warm fail: {e}", flush=True)
 
 # -------------------------------------------------
 # Health / Debug
@@ -108,8 +123,20 @@ def pick_ayanamsa_deg(jd_ut: float, ayanamsa_name: str) -> float:
 def _iso_to_dt(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
 
+# ✅ NEW: bucket datetimeLocal (NOW taps within 1 minute share same cache key)
+def _bucket_datetimeLocal(dt_local: str, bucket_sec: int = 60) -> str:
+    try:
+        dt = datetime.fromisoformat(dt_local)
+        ts = int(dt.timestamp())
+        ts2 = ts - (ts % bucket_sec)
+        dt2 = datetime.fromtimestamp(ts2)
+        return dt2.isoformat()
+    except Exception:
+        return dt_local
+
 def _make_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayanamsa: str) -> str:
-    raw = f"{datetimeLocal}|{tz}|{float(lat):.5f}|{float(lon):.5f}|{ayanamsa}"
+    dtb = _bucket_datetimeLocal(datetimeLocal, 60)  # ✅ 1-minute bucket
+    raw = f"{dtb}|{tz}|{float(lat):.5f}|{float(lon):.5f}|{ayanamsa}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 # -------------------------------------------------
@@ -138,10 +165,18 @@ def _cache_set(key: str, data: Any):
     _CACHE[key] = {"_ts": time.time(), "data": data}
 
 # -------------------------------------------------
-# NASA API
+# NASA API (✅ cached)
 # -------------------------------------------------
 @app.post("/api/astro/nasa", response_model=NASAResp)
 def nasa_positions(req: NASAReq):
+    # ✅ safe ayanamsa key (NASAReq may not have ayanamsa field)
+    ayan_name = normalize_ayanamsa_name(getattr(req, "ayanamsa", "KP"))
+    key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lng, ayan_name)
+
+    cached = _cache_get(f"nasa:{key}")
+    if cached:
+        return cached
+
     utc_iso = local_to_utc_iso(req.datetimeLocal, req.tz)
     jd_ut, planets = get_planets_ecliptic(utc_iso, req.lat, req.lng)
 
@@ -191,7 +226,9 @@ def nasa_positions(req: NASAReq):
             "subSubLord": k_ss,
         })
 
-    return {"jd_ut": jd_ut, "utc_iso": utc_iso, "planets": enriched}
+    out = {"jd_ut": jd_ut, "utc_iso": utc_iso, "planets": enriched}
+    _cache_set(f"nasa:{key}", out)
+    return out
 
 # -------------------------------------------------
 # Placidus API
@@ -229,7 +266,7 @@ def astro_panchangam(req: PanchangamReq):
     )
 
 # -------------------------------------------------
-# HOME API (FAST: no Panchangam heavy calc)
+# HOME API (✅ cached)
 # -------------------------------------------------
 class HomeReq(BaseModel):
     datetimeLocal: str
@@ -245,10 +282,16 @@ class HomeReq(BaseModel):
 
 @app.post("/api/astro/home")
 def astro_home(req: HomeReq):
+    ayan_name = normalize_ayanamsa_name(req.ayanamsa)
+    key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
+
+    cached = _cache_get(f"home:{key}")
+    if cached:
+        return cached
+
     utc_iso = local_to_utc_iso(req.datetimeLocal, req.tz)
     jd_ut, planets = get_planets_ecliptic(utc_iso, req.lat, req.lon)
 
-    ayan_name = normalize_ayanamsa_name(req.ayanamsa)
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
 
     kundali_planets: List[Dict[str, Any]] = []
@@ -265,6 +308,7 @@ def astro_home(req: HomeReq):
             "retro": float(p.get("speed_lon", 0.0)) < 0,
         })
 
+        # keep table but empty KP lords here (frontend/other endpoint can enrich)
         kp_graha_table.append({
             "planet": name,
             "longitude": dms,
@@ -311,8 +355,8 @@ def astro_home(req: HomeReq):
     kp_bhava_table = []
 
     for i in range(1, 13):
-        key = f"house{i}"
-        lon_sid = float(cusps_sid[key])
+        house_key = f"house{i}"
+        lon_sid = float(cusps_sid[house_key])
         dms = _abs_to_dms(lon_sid)
 
         bhava_cusps.append({"bhava": i, "longitude": dms})
@@ -344,6 +388,8 @@ def astro_home(req: HomeReq):
         "vimshottari": None,
         "rulingPlanets": None,
     }
+
+    _cache_set(f"home:{key}", resp)
     return resp
 
 # -------------------------------------------------
