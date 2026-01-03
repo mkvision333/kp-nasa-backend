@@ -1,16 +1,30 @@
-# main.py ✅ (FULL REPLACE) — Faster first tap: startup warm + 1-min bucket cache + home/nasa caching
+# main.py ✅ (FULL REPLACE)
+# ✅ Updates:
+# - Adds /timezone endpoint (TimezoneFinder) → correct world tz for any lat/lon
+# - Keeps your startup warm + 1-min bucket cache + nasa/home/dasha caching
+# - Adds safe import fallback if timezonefinder not installed (returns "UTC" + message)
+# - Small guard fixes: req.lon/req.lng consistency, file read safety for utilities.json
+
 from datetime import datetime, timezone
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
 import hashlib
 import time
-
-# ✅ Editorial JSON (INLINE, no download)
 import os
 import json
-from fastapi.responses import JSONResponse
+
+# ✅ TimezoneFinder (for /timezone)
+try:
+    from timezonefinder import TimezoneFinder  # pip install timezonefinder
+    _TF = TimezoneFinder()
+    _TF_OK = True
+except Exception as _e:
+    _TF = None
+    _TF_OK = False
+    _TF_ERR = str(_e)
 
 from app.core.models import NASAReq, NASAResp
 from app.core.jd import local_to_utc_iso
@@ -27,12 +41,8 @@ from app.core.houses_models import PlacidusReq, PlacidusResp
 from app.core.houses_placidus import placidus_cusps, siderealize_cusps
 
 from app.core.vimshottari_utils import moon_vimshottari_info
-from app.core.vimshottari_tree import (
-    build_mahadasha_list_120y_9items,
-    build_level_list,
-)
+from app.core.vimshottari_tree import build_mahadasha_list_120y_9items, build_level_list
 
-# ✅ Panchangam calc (LAZY endpoint only)
 from app.core.panchangam_calc import compute_panchangam
 
 
@@ -50,7 +60,7 @@ app.add_middleware(
 )
 
 # -------------------------------------------------
-# ✅ Startup warm-up (reduces first tap 60s)
+# ✅ Startup warm-up (reduces first tap)
 # -------------------------------------------------
 @app.on_event("startup")
 def _startup_warm():
@@ -76,14 +86,38 @@ def debug_routes():
     return [r.path for r in app.routes]
 
 # -------------------------------------------------
+# ✅ NEW: Timezone API (worldwide)
+# -------------------------------------------------
+@app.get("/timezone")
+def timezone_lookup(lat: float = Query(...), lon: float = Query(...)):
+    """
+    Returns IANA timezone for a lat/lon.
+    Example: Europe/London, Asia/Tokyo, America/New_York
+    """
+    if not _TF_OK:
+        return {"tz": "UTC", "ok": False, "message": f"timezonefinder missing: {_TF_ERR}"}
+
+    try:
+        tz = _TF.timezone_at(lat=lat, lng=lon) or _TF.closest_timezone_at(lat=lat, lng=lon)
+        return {"tz": tz or "UTC", "ok": True}
+    except Exception as e:
+        return {"tz": "UTC", "ok": False, "message": str(e)}
+
+# -------------------------------------------------
 # ✅ Editorial JSON content (Utilities) — INLINE JSON (no download)
 # -------------------------------------------------
 @app.get("/content/utilities.json")
 def serve_utilities_json():
     file_path = os.path.join("content", "utilities.json")
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return JSONResponse(content=data)
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return JSONResponse(content=data)
+    except Exception as e:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "utilities.json not found", "message": str(e), "path": file_path},
+        )
 
 # -------------------------------------------------
 # Utilities
@@ -171,6 +205,8 @@ def _cache_set(key: str, data: Any):
 def nasa_positions(req: NASAReq):
     # ✅ safe ayanamsa key (NASAReq may not have ayanamsa field)
     ayan_name = normalize_ayanamsa_name(getattr(req, "ayanamsa", "KP"))
+
+    # NASAReq uses req.lng (as per your earlier code)
     key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lng, ayan_name)
 
     cached = _cache_get(f"nasa:{key}")
@@ -190,12 +226,14 @@ def nasa_positions(req: NASAReq):
         if p["name"] == "Moon":
             moon_lon = lon
 
-        enriched.append({
-            **p,
-            "starLord": star,
-            "subLord": sub,
-            "subSubLord": subsub,
-        })
+        enriched.append(
+            {
+                **p,
+                "starLord": star,
+                "subLord": sub,
+                "subSubLord": subsub,
+            }
+        )
 
     # NOTE: keep your existing logic
     if moon_lon is not None:
@@ -204,27 +242,31 @@ def nasa_positions(req: NASAReq):
         r_star, r_sub, r_ss = kp_star_sub_sub(rahu_lon)
         k_star, k_sub, k_ss = kp_star_sub_sub(ketu_lon)
 
-        enriched.append({
-            "name": "Rahu",
-            "lon": rahu_lon,
-            "lat": 0.0,
-            "dist_au": 0.0,
-            "speed_lon": -0.053,
-            "starLord": r_star,
-            "subLord": r_sub,
-            "subSubLord": r_ss,
-        })
+        enriched.append(
+            {
+                "name": "Rahu",
+                "lon": rahu_lon,
+                "lat": 0.0,
+                "dist_au": 0.0,
+                "speed_lon": -0.053,
+                "starLord": r_star,
+                "subLord": r_sub,
+                "subSubLord": r_ss,
+            }
+        )
 
-        enriched.append({
-            "name": "Ketu",
-            "lon": ketu_lon,
-            "lat": 0.0,
-            "dist_au": 0.0,
-            "speed_lon": -0.053,
-            "starLord": k_star,
-            "subLord": k_sub,
-            "subSubLord": k_ss,
-        })
+        enriched.append(
+            {
+                "name": "Ketu",
+                "lon": ketu_lon,
+                "lat": 0.0,
+                "dist_au": 0.0,
+                "speed_lon": -0.053,
+                "starLord": k_star,
+                "subLord": k_sub,
+                "subSubLord": k_ss,
+            }
+        )
 
     out = {"jd_ut": jd_ut, "utc_iso": utc_iso, "planets": enriched}
     _cache_set(f"nasa:{key}", out)
@@ -302,24 +344,27 @@ def astro_home(req: HomeReq):
         lon_sid = norm360(float(p["lon"]) - ayan)
         dms = _abs_to_dms(lon_sid)
 
-        kundali_planets.append({
-            "planet": name,
-            "longitude": dms,
-            "retro": float(p.get("speed_lon", 0.0)) < 0,
-        })
+        kundali_planets.append(
+            {
+                "planet": name,
+                "longitude": dms,
+                "retro": float(p.get("speed_lon", 0.0)) < 0,
+            }
+        )
 
-        # keep table but empty KP lords here (frontend/other endpoint can enrich)
-        kp_graha_table.append({
-            "planet": name,
-            "longitude": dms,
-            "retro": float(p.get("speed_lon", 0.0)) < 0,
-            "starLord": "",
-            "subLord": "",
-            "subSubLord": "",
-            "signifies": [],
-            "star_signifies": [],
-            "occupies": [],
-        })
+        kp_graha_table.append(
+            {
+                "planet": name,
+                "longitude": dms,
+                "retro": float(p.get("speed_lon", 0.0)) < 0,
+                "starLord": "",
+                "subLord": "",
+                "subSubLord": "",
+                "signifies": [],
+                "star_signifies": [],
+                "occupies": [],
+            }
+        )
 
     rahu_trop = float(mean_lunar_node_tropical_deg(jd_ut))
     ketu_trop = norm360(rahu_trop + 180.0)
@@ -330,17 +375,19 @@ def astro_home(req: HomeReq):
     for name, lon in [("Rahu", rahu_sid), ("Ketu", ketu_sid)]:
         dms = _abs_to_dms(lon)
         kundali_planets.append({"planet": name, "longitude": dms, "retro": True})
-        kp_graha_table.append({
-            "planet": name,
-            "longitude": dms,
-            "retro": True,
-            "starLord": "",
-            "subLord": "",
-            "subSubLord": "",
-            "signifies": [],
-            "star_signifies": [],
-            "occupies": [],
-        })
+        kp_graha_table.append(
+            {
+                "planet": name,
+                "longitude": dms,
+                "retro": True,
+                "starLord": "",
+                "subLord": "",
+                "subSubLord": "",
+                "signifies": [],
+                "star_signifies": [],
+                "occupies": [],
+            }
+        )
 
     cusps_trop = placidus_cusps(jd_ut, req.lat, req.lon)
 
@@ -360,13 +407,15 @@ def astro_home(req: HomeReq):
         dms = _abs_to_dms(lon_sid)
 
         bhava_cusps.append({"bhava": i, "longitude": dms})
-        kp_bhava_table.append({
-            "bhava": i,
-            "longitude": dms,
-            "starLord": "",
-            "subLord": "",
-            "subSubLord": "",
-        })
+        kp_bhava_table.append(
+            {
+                "bhava": i,
+                "longitude": dms,
+                "starLord": "",
+                "subLord": "",
+                "subSubLord": "",
+            }
+        )
 
     resp = {
         "meta": {
