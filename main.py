@@ -1,9 +1,10 @@
 # main.py ✅ (FULL REPLACE)
-# ✅ Updates:
-# - Adds /timezone endpoint (TimezoneFinder) → correct world tz for any lat/lon
-# - Keeps your startup warm + 1-min bucket cache + nasa/home/dasha caching
-# - Adds safe import fallback if timezonefinder not installed (returns "UTC" + message)
-# - Small guard fixes: req.lon/req.lng consistency, file read safety for utilities.json
+# ✅ Updates in this version:
+# - Fixes timezone endpoint variable bug (_TF_OK → _TZF_OK)
+# - Adds sign/signLord/signName for KP bhavaTable + kundali bhavaCusps
+# - Adds graha occupied house + sign (+ occupies array) for KP grahaTable (incl Rahu/Ketu)
+# - Keeps startup warm, /health, /debug/routes, editorial JSON, caching, nasa, placidus, panchangam, dasha APIs
+# - No extra dependencies; safe fallbacks; should run without errors
 
 from datetime import datetime, timezone
 from fastapi import FastAPI, Query
@@ -16,15 +17,16 @@ import time
 import os
 import json
 
-# ✅ TimezoneFinder (for /timezone)
+# ✅ TimezoneFinder (SAFE import)
 try:
     from timezonefinder import TimezoneFinder  # pip install timezonefinder
-    _TF = TimezoneFinder()
-    _TF_OK = True
+    _TZF = TimezoneFinder()
+    _TZF_OK = True
+    _TZF_ERR = ""
 except Exception as _e:
-    _TF = None
-    _TF_OK = False
-    _TF_ERR = str(_e)
+    _TZF = None
+    _TZF_OK = False
+    _TZF_ERR = str(_e)
 
 from app.core.models import NASAReq, NASAResp
 from app.core.jd import local_to_utc_iso
@@ -60,15 +62,13 @@ app.add_middleware(
 )
 
 # -------------------------------------------------
-# ✅ Startup warm-up (reduces first tap)
+# ✅ Startup warm-up
 # -------------------------------------------------
 @app.on_event("startup")
 def _startup_warm():
     try:
         utc_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        # warm skyfield / ephemeris kernel
         get_planets_ecliptic(utc_iso, 0.0, 0.0)
-        # warm KP table calc
         kp_star_sub_sub(0.0)
         print("[STARTUP] warm ok", flush=True)
     except Exception as e:
@@ -86,7 +86,7 @@ def debug_routes():
     return [r.path for r in app.routes]
 
 # -------------------------------------------------
-# ✅ NEW: Timezone API (worldwide)
+# ✅ Timezone API (worldwide)
 # -------------------------------------------------
 @app.get("/timezone")
 def timezone_lookup(lat: float = Query(...), lon: float = Query(...)):
@@ -94,17 +94,19 @@ def timezone_lookup(lat: float = Query(...), lon: float = Query(...)):
     Returns IANA timezone for a lat/lon.
     Example: Europe/London, Asia/Tokyo, America/New_York
     """
-    if not _TF_OK:
-        return {"tz": "UTC", "ok": False, "message": f"timezonefinder missing: {_TF_ERR}"}
+    if not _TZF_OK:
+        return {"tz": "UTC", "ok": False, "message": f"timezonefinder missing: {_TZF_ERR}"}
 
     try:
-        tz = _TF.timezone_at(lat=lat, lng=lon) or _TF.closest_timezone_at(lat=lat, lng=lon)
+        tz = _TZF.timezone_at(lat=float(lat), lng=float(lon))
+        if not tz:
+            tz = _TZF.closest_timezone_at(lat=float(lat), lng=float(lon))
         return {"tz": tz or "UTC", "ok": True}
     except Exception as e:
         return {"tz": "UTC", "ok": False, "message": str(e)}
 
 # -------------------------------------------------
-# ✅ Editorial JSON content (Utilities) — INLINE JSON (no download)
+# ✅ Editorial JSON content
 # -------------------------------------------------
 @app.get("/content/utilities.json")
 def serve_utilities_json():
@@ -149,7 +151,6 @@ def normalize_ayanamsa_name(v: Optional[str]) -> str:
 
 def pick_ayanamsa_deg(jd_ut: float, ayanamsa_name: str) -> float:
     lahiri = float(ayanamsa_lahiri_approx_deg(jd_ut))
-    # KP = Lahiri - 0.1015 (your existing rule)
     if ayanamsa_name == "KP":
         return lahiri - 0.1015
     return lahiri
@@ -157,7 +158,6 @@ def pick_ayanamsa_deg(jd_ut: float, ayanamsa_name: str) -> float:
 def _iso_to_dt(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
 
-# ✅ NEW: bucket datetimeLocal (NOW taps within 1 minute share same cache key)
 def _bucket_datetimeLocal(dt_local: str, bucket_sec: int = 60) -> str:
     try:
         dt = datetime.fromisoformat(dt_local)
@@ -169,16 +169,71 @@ def _bucket_datetimeLocal(dt_local: str, bucket_sec: int = 60) -> str:
         return dt_local
 
 def _make_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayanamsa: str) -> str:
-    dtb = _bucket_datetimeLocal(datetimeLocal, 60)  # ✅ 1-minute bucket
+    dtb = _bucket_datetimeLocal(datetimeLocal, 60)
     raw = f"{dtb}|{tz}|{float(lat):.5f}|{float(lon):.5f}|{ayanamsa}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
+# -----------------------------
+# ✅ Sign helpers (NEW)
+# -----------------------------
+SIGN_NAMES = [
+    "", "Mesha", "Vrishabha", "Mithuna", "Karkataka", "Simha", "Kanya",
+    "Tula", "Vrischika", "Dhanu", "Makara", "Kumbha", "Meena"
+]
+
+SIGN_LORD_BY_SIGN: Dict[int, str] = {
+    1: "Mars",
+    2: "Venus",
+    3: "Mercury",
+    4: "Moon",
+    5: "Sun",
+    6: "Mercury",
+    7: "Venus",
+    8: "Mars",
+    9: "Jupiter",
+    10: "Saturn",
+    11: "Saturn",
+    12: "Jupiter",
+}
+
+def sign_from_lon_deg(lon: float) -> int:
+    d = norm360(float(lon))
+    return int(d // 30) + 1  # 1..12
+
+def house_from_lon_and_cusps(lon: float, cusps_sid_by_house: Dict[int, float]) -> int:
+    """
+    cusps_sid_by_house: {1:deg,2:deg,...,12:deg} sidereal
+    returns occupied house 1..12 (cusp segment logic)
+    """
+    lon = norm360(float(lon))
+    cusp = {int(k): norm360(float(v)) for k, v in cusps_sid_by_house.items()}
+
+    for h in range(1, 12):
+        a = cusp[h]
+        b = cusp[h + 1]
+        if a <= b:
+            if a <= lon < b:
+                return h
+        else:
+            if lon >= a or lon < b:
+                return h
+
+    a = cusp[12]
+    b = cusp[1]
+    if a <= b:
+        if a <= lon < b:
+            return 12
+    else:
+        if lon >= a or lon < b:
+            return 12
+    return 12
+
 # -------------------------------------------------
-# In-memory cache (simple, later Redis)
+# In-memory cache
 # -------------------------------------------------
 _SESSION: Dict[str, Dict[str, Any]] = {}
 _CACHE: Dict[str, Dict[str, Any]] = {}
-TTL_SEC = 6 * 60 * 60  # 6 hours
+TTL_SEC = 6 * 60 * 60
 
 def _gc():
     now = time.time()
@@ -199,14 +254,11 @@ def _cache_set(key: str, data: Any):
     _CACHE[key] = {"_ts": time.time(), "data": data}
 
 # -------------------------------------------------
-# NASA API (✅ cached)
+# NASA API (cached)
 # -------------------------------------------------
 @app.post("/api/astro/nasa", response_model=NASAResp)
 def nasa_positions(req: NASAReq):
-    # ✅ safe ayanamsa key (NASAReq may not have ayanamsa field)
     ayan_name = normalize_ayanamsa_name(getattr(req, "ayanamsa", "KP"))
-
-    # NASAReq uses req.lng (as per your earlier code)
     key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lng, ayan_name)
 
     cached = _cache_get(f"nasa:{key}")
@@ -226,47 +278,22 @@ def nasa_positions(req: NASAReq):
         if p["name"] == "Moon":
             moon_lon = lon
 
-        enriched.append(
-            {
-                **p,
-                "starLord": star,
-                "subLord": sub,
-                "subSubLord": subsub,
-            }
-        )
+        enriched.append({**p, "starLord": star, "subLord": sub, "subSubLord": subsub})
 
-    # NOTE: keep your existing logic
+    # Optional: Rahu/Ketu based on Moon
     if moon_lon is not None:
         rahu_lon, ketu_lon = calc_rahu_ketu(moon_lon)
-
         r_star, r_sub, r_ss = kp_star_sub_sub(rahu_lon)
         k_star, k_sub, k_ss = kp_star_sub_sub(ketu_lon)
 
-        enriched.append(
-            {
-                "name": "Rahu",
-                "lon": rahu_lon,
-                "lat": 0.0,
-                "dist_au": 0.0,
-                "speed_lon": -0.053,
-                "starLord": r_star,
-                "subLord": r_sub,
-                "subSubLord": r_ss,
-            }
-        )
-
-        enriched.append(
-            {
-                "name": "Ketu",
-                "lon": ketu_lon,
-                "lat": 0.0,
-                "dist_au": 0.0,
-                "speed_lon": -0.053,
-                "starLord": k_star,
-                "subLord": k_sub,
-                "subSubLord": k_ss,
-            }
-        )
+        enriched.append({
+            "name": "Rahu", "lon": rahu_lon, "lat": 0.0, "dist_au": 0.0, "speed_lon": -0.053,
+            "starLord": r_star, "subLord": r_sub, "subSubLord": r_ss
+        })
+        enriched.append({
+            "name": "Ketu", "lon": ketu_lon, "lat": 0.0, "dist_au": 0.0, "speed_lon": -0.053,
+            "starLord": k_star, "subLord": k_sub, "subSubLord": k_ss
+        })
 
     out = {"jd_ut": jd_ut, "utc_iso": utc_iso, "planets": enriched}
     _cache_set(f"nasa:{key}", out)
@@ -282,7 +309,7 @@ def placidus_houses(req: PlacidusReq):
     return {"cusps_tropical": cusps_trop, "cusps_sidereal": cusps_sid}
 
 # -------------------------------------------------
-# ✅ LAZY Panchangam API (ON demand)
+# Panchangam API
 # -------------------------------------------------
 class PanchangamReq(BaseModel):
     datetimeLocal: str
@@ -295,7 +322,6 @@ class PanchangamReq(BaseModel):
 def astro_panchangam(req: PanchangamReq):
     utc_iso = local_to_utc_iso(req.datetimeLocal, req.tz)
     jd_ut, _ = get_planets_ecliptic(utc_iso, req.lat, req.lon)
-
     ayan_name = normalize_ayanamsa_name(req.ayanamsa)
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
 
@@ -308,7 +334,7 @@ def astro_panchangam(req: PanchangamReq):
     )
 
 # -------------------------------------------------
-# HOME API (✅ cached)
+# HOME API (cached)
 # -------------------------------------------------
 class HomeReq(BaseModel):
     datetimeLocal: str
@@ -333,64 +359,10 @@ def astro_home(req: HomeReq):
 
     utc_iso = local_to_utc_iso(req.datetimeLocal, req.tz)
     jd_ut, planets = get_planets_ecliptic(utc_iso, req.lat, req.lon)
-
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
 
-    kundali_planets: List[Dict[str, Any]] = []
-    kp_graha_table: List[Dict[str, Any]] = []
-
-    for p in planets:
-        name = p["name"]
-        lon_sid = norm360(float(p["lon"]) - ayan)
-        dms = _abs_to_dms(lon_sid)
-
-        kundali_planets.append(
-            {
-                "planet": name,
-                "longitude": dms,
-                "retro": float(p.get("speed_lon", 0.0)) < 0,
-            }
-        )
-
-        kp_graha_table.append(
-            {
-                "planet": name,
-                "longitude": dms,
-                "retro": float(p.get("speed_lon", 0.0)) < 0,
-                "starLord": "",
-                "subLord": "",
-                "subSubLord": "",
-                "signifies": [],
-                "star_signifies": [],
-                "occupies": [],
-            }
-        )
-
-    rahu_trop = float(mean_lunar_node_tropical_deg(jd_ut))
-    ketu_trop = norm360(rahu_trop + 180.0)
-
-    rahu_sid = norm360(rahu_trop - ayan)
-    ketu_sid = norm360(ketu_trop - ayan)
-
-    for name, lon in [("Rahu", rahu_sid), ("Ketu", ketu_sid)]:
-        dms = _abs_to_dms(lon)
-        kundali_planets.append({"planet": name, "longitude": dms, "retro": True})
-        kp_graha_table.append(
-            {
-                "planet": name,
-                "longitude": dms,
-                "retro": True,
-                "starLord": "",
-                "subLord": "",
-                "subSubLord": "",
-                "signifies": [],
-                "star_signifies": [],
-                "occupies": [],
-            }
-        )
-
+    # --- cusps (trop -> sidereal) ---
     cusps_trop = placidus_cusps(jd_ut, req.lat, req.lon)
-
     cusps_sid: Dict[str, Any] = {}
     for k, v in cusps_trop.items():
         try:
@@ -398,24 +370,114 @@ def astro_home(req: HomeReq):
         except Exception:
             cusps_sid[k] = v
 
-    bhava_cusps = []
-    kp_bhava_table = []
+    # sidereal cusp map 1..12 (needed for occupied house)
+    cusps_sid_map: Dict[int, float] = {}
+    for i in range(1, 13):
+        cusps_sid_map[i] = float(cusps_sid.get(f"house{i}", 0.0))
+
+    kundali_planets: List[Dict[str, Any]] = []
+    kp_graha_table: List[Dict[str, Any]] = []
+
+    # --- planets (sidereal longitudes) ---
+    for p in planets:
+        name = p["name"]
+        lon_sid = norm360(float(p["lon"]) - ayan)
+        dms = _abs_to_dms(lon_sid)
+
+        g_sign = sign_from_lon_deg(lon_sid)
+        g_house = house_from_lon_and_cusps(lon_sid, cusps_sid_map)
+
+        # KP star/sub based on sidereal lon (simple & consistent)
+        star, sub, subsub = kp_star_sub_sub(lon_sid)
+
+        kundali_planets.append({
+            "planet": name,
+            "longitude": dms,
+            "retro": float(p.get("speed_lon", 0.0)) < 0
+        })
+
+        kp_graha_table.append({
+            "planet": name,
+            "longitude": dms,
+            "retro": float(p.get("speed_lon", 0.0)) < 0,
+
+            "sign": g_sign,
+            "signName": SIGN_NAMES[g_sign],
+            "house": g_house,
+
+            "starLord": star or "",
+            "subLord": sub or "",
+            "subSubLord": subsub or "",
+
+            "signifies": [],
+            "star_signifies": [],
+            "occupies": [g_house],
+        })
+
+    # --- Rahu/Ketu (mean node) sidereal ---
+    rahu_trop = float(mean_lunar_node_tropical_deg(jd_ut))
+    ketu_trop = norm360(rahu_trop + 180.0)
+    rahu_sid = norm360(rahu_trop - ayan)
+    ketu_sid = norm360(ketu_trop - ayan)
+
+    for name, lon in [("Rahu", rahu_sid), ("Ketu", ketu_sid)]:
+        dms = _abs_to_dms(lon)
+        g_sign = sign_from_lon_deg(lon)
+        g_house = house_from_lon_and_cusps(lon, cusps_sid_map)
+        star, sub, subsub = kp_star_sub_sub(lon)
+
+        kundali_planets.append({"planet": name, "longitude": dms, "retro": True})
+        kp_graha_table.append({
+            "planet": name,
+            "longitude": dms,
+            "retro": True,
+
+            "sign": g_sign,
+            "signName": SIGN_NAMES[g_sign],
+            "house": g_house,
+
+            "starLord": star or "",
+            "subLord": sub or "",
+            "subSubLord": subsub or "",
+
+            "signifies": [],
+            "star_signifies": [],
+            "occupies": [g_house],
+        })
+
+    # --- bhava cusps tables (with sign + signLord) ---
+    bhava_cusps: List[Dict[str, Any]] = []
+    kp_bhava_table: List[Dict[str, Any]] = []
 
     for i in range(1, 13):
         house_key = f"house{i}"
-        lon_sid = float(cusps_sid[house_key])
+        lon_sid = float(cusps_sid.get(house_key, 0.0))
         dms = _abs_to_dms(lon_sid)
 
-        bhava_cusps.append({"bhava": i, "longitude": dms})
-        kp_bhava_table.append(
-            {
-                "bhava": i,
-                "longitude": dms,
-                "starLord": "",
-                "subLord": "",
-                "subSubLord": "",
-            }
-        )
+        sgn = sign_from_lon_deg(lon_sid)
+        sgn_lord = SIGN_LORD_BY_SIGN.get(sgn, "")
+
+        # KP lords for cusp position
+        c_star, c_sub, c_ss = kp_star_sub_sub(lon_sid)
+
+        bhava_cusps.append({
+            "bhava": i,
+            "longitude": dms,
+            "sign": sgn,
+            "signName": SIGN_NAMES[sgn],
+            "signLord": sgn_lord,
+        })
+
+        kp_bhava_table.append({
+            "bhava": i,
+            "longitude": dms,
+            "sign": sgn,
+            "signName": SIGN_NAMES[sgn],
+            "signLord": sgn_lord,
+            "starLord": c_star or "",
+            "subLord": c_sub or "",
+            "subSubLord": c_ss or "",
+        })
 
     resp = {
         "meta": {
@@ -442,7 +504,7 @@ def astro_home(req: HomeReq):
     return resp
 
 # -------------------------------------------------
-# LAZY DASHA APIs
+# LAZY DASHA APIs (unchanged)
 # -------------------------------------------------
 class DashaBaseReq(BaseModel):
     datetimeLocal: str
@@ -478,11 +540,9 @@ def _ensure_session(req: DashaBaseReq) -> Dict[str, Any]:
     moon_sid = norm360(moon_trop - float(ayan))
     maha_lord, balance_years = moon_vimshottari_info(moon_sid)
     balance_years = max(0.0, float(balance_years))
-
     start_utc = datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
 
     key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
-
     ses = {
         "_ts": time.time(),
         "key": key,
@@ -506,9 +566,7 @@ def dasha_maha(req: DashaBaseReq):
     if cached:
         return cached
 
-    ses = _SESSION.get(key)
-    if not ses:
-        ses = _ensure_session(req)
+    ses = _SESSION.get(key) or _ensure_session(req)
 
     maha_list = build_mahadasha_list_120y_9items(
         start_utc=ses["start_utc"],
