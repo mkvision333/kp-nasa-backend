@@ -1,4 +1,9 @@
-from skyfield.api import load
+try:
+    from skyfield.api import load
+except Exception as e:
+    print("❌ Skyfield import failed:", e)
+    raise
+
 from skyfield.framelib import ecliptic_frame
 from datetime import datetime
 import math
