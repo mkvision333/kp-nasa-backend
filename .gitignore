@@ -1,3 +1,11 @@
+# Python cache
 __pycache__/
 *.pyc
-https://kp-nasa-backend.onrender.com
+
+# Virtual environments
+.venv/
+venv/
+
+# OS / editor junk
+.DS_Store
+.vscode/
