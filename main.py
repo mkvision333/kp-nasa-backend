@@ -1,5 +1,8 @@
 # main.py ✅ (FULL REPLACE)
 # ✅ Updates in this version:
+# - ✅ FIX: /api/astro/home cache key now includes includeDasha + flags (no more "dasha stuck missing" cache)
+# - ✅ NEW: If includeDasha=True, HOME API will build Vimshottari tree (Mahadasha → Bhukti → Antara → Sukshma)
+#         so PDF కి dashaRoot ఖచ్చితంగా వస్తుంది (lazy-load ఉన్నా PDF కోసం on-demand)
 # - Fixes timezone endpoint variable bug (_TF_OK → _TZF_OK)
 # - Adds sign/signLord/signName for KP bhavaTable + kundali bhavaCusps
 # - Adds graha occupied house + sign (+ occupies array) for KP grahaTable (incl Rahu/Ketu)
@@ -348,10 +351,127 @@ class HomeReq(BaseModel):
     horaryNumber: Optional[int] = 1
     includeDasha: Optional[bool] = False
 
+def _safe_bool(v: Any, default: bool = False) -> bool:
+    try:
+        if v is None:
+            return default
+        return bool(v)
+    except Exception:
+        return default
+
+def _build_home_dasha_tree_upto_sukshma(
+    utc_iso: str,
+    jd_ut: float,
+    planets_tropical: List[Dict[str, Any]],
+    ayan_deg: float,
+) -> Dict[str, Any]:
+    """
+    Builds Vimshottari tree: Mahadasha → Bhukti → Antara → Sukshma
+    Output shape matches homePdf pickChildren:
+      root = {"tree":[{lord,start,end,bhukti:[{lord,start,end,antara:[{...sukshma:[...]}]}]}]}
+    """
+    # Find Moon tropical lon
+    moon_trop = None
+    for p in planets_tropical or []:
+        if str(p.get("name", "")).strip().lower() == "moon":
+            moon_trop = float(p.get("lon", 0.0)) % 360.0
+            break
+    if moon_trop is None:
+        return {"tree": []}
+
+    moon_sid = norm360(float(moon_trop) - float(ayan_deg))
+    maha_lord, balance_years = moon_vimshottari_info(moon_sid)
+    balance_years = max(0.0, float(balance_years))
+
+    start_utc = datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+    # Mahadasha list (9 items)
+    maha_list = build_mahadasha_list_120y_9items(
+        start_utc=start_utc,
+        maha_lord=str(maha_lord),
+        maha_balance_years=float(balance_years),
+    ) or []
+
+    maha_nodes: List[Dict[str, Any]] = []
+    for md in maha_list:
+        md_lord = str(md.get("lord") or md.get("planet") or md.get("name") or md.get("key") or "").strip()
+        md_start = str(md.get("start") or md.get("from") or "").strip()
+        md_end = str(md.get("end") or md.get("to") or "").strip()
+
+        node_md: Dict[str, Any] = {"lord": md_lord, "start": md_start, "end": md_end, "bhukti": []}
+
+        # Build Bhukti under this MD
+        try:
+            b_list = build_level_list("bhukti", _iso_to_dt(md_start), _iso_to_dt(md_end), md_lord) or []
+        except Exception:
+            b_list = []
+
+        bhukti_nodes: List[Dict[str, Any]] = []
+        for b in b_list:
+            b_lord = str(b.get("lord") or b.get("planet") or b.get("name") or b.get("key") or "").strip()
+            b_start = str(b.get("start") or b.get("from") or "").strip()
+            b_end = str(b.get("end") or b.get("to") or "").strip()
+            node_b: Dict[str, Any] = {"lord": b_lord, "start": b_start, "end": b_end, "antara": []}
+
+            # Build Antara under this Bhukti
+            try:
+                a_list = build_level_list("antara", _iso_to_dt(b_start), _iso_to_dt(b_end), b_lord) or []
+            except Exception:
+                a_list = []
+
+            antara_nodes: List[Dict[str, Any]] = []
+            for a in a_list:
+                a_lord = str(a.get("lord") or a.get("planet") or a.get("name") or a.get("key") or "").strip()
+                a_start = str(a.get("start") or a.get("from") or "").strip()
+                a_end = str(a.get("end") or a.get("to") or "").strip()
+                node_a: Dict[str, Any] = {"lord": a_lord, "start": a_start, "end": a_end, "sukshma": []}
+
+                # Build Sukshma under this Antara
+                try:
+                    s_list = build_level_list("sukshma", _iso_to_dt(a_start), _iso_to_dt(a_end), a_lord) or []
+                except Exception:
+                    s_list = []
+
+                suk_nodes: List[Dict[str, Any]] = []
+                for s in s_list:
+                    s_lord = str(s.get("lord") or s.get("planet") or s.get("name") or s.get("key") or "").strip()
+                    s_start = str(s.get("start") or s.get("from") or "").strip()
+                    s_end = str(s.get("end") or s.get("to") or "").strip()
+                    suk_nodes.append({"lord": s_lord, "start": s_start, "end": s_end})
+
+                node_a["sukshma"] = suk_nodes
+                antara_nodes.append(node_a)
+
+            node_b["antara"] = antara_nodes
+            bhukti_nodes.append(node_b)
+
+        node_md["bhukti"] = bhukti_nodes
+        maha_nodes.append(node_md)
+
+    return {
+        "tree": maha_nodes,
+        "meta": {
+            "utc_iso": utc_iso,
+            "jd_ut": jd_ut,
+        },
+        "note": "Built in HOME includeDasha=True (Mahadasha→Bhukti→Antara→Sukshma)",
+    }
+
 @app.post("/api/astro/home")
 def astro_home(req: HomeReq):
     ayan_name = normalize_ayanamsa_name(req.ayanamsa)
-    key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
+
+    # ✅ IMPORTANT FIX:
+    # Base key (datetime + place + ayanamsa) + flags so cache never returns "no-dasha" for includeDasha requests
+    base_key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
+    key = (
+        base_key
+        + f"|D{int(_safe_bool(req.includeDasha, False))}"
+        + f"|OP{int(_safe_bool(req.outerPlanets, False))}"
+        + f"|NM{int(_safe_bool(req.nodeMode, True))}"
+        + f"|H{int(_safe_bool(req.horaryOn, False))}"
+        + f"|HN{int(req.horaryNumber or 1)}"
+    )
 
     cached = _cache_get(f"home:{key}")
     if cached:
@@ -479,6 +599,23 @@ def astro_home(req: HomeReq):
             "subSubLord": c_ss or "",
         })
 
+    # ✅ If includeDasha=True, build tree for PDF (Mahadasha→Bhukti→Antara→Sukshma)
+    dasha_payload = None
+    vim_payload = None
+    if _safe_bool(req.includeDasha, False):
+        try:
+            dasha_payload = _build_home_dasha_tree_upto_sukshma(
+                utc_iso=utc_iso,
+                jd_ut=jd_ut,
+                planets_tropical=planets,
+                ayan_deg=float(ayan),
+            )
+            # Keep compatibility: some apps read vimshottari.tree
+            vim_payload = dasha_payload
+        except Exception as e:
+            dasha_payload = {"tree": [], "error": str(e)}
+            vim_payload = dasha_payload
+
     resp = {
         "meta": {
             "source": "kp-nasa-backend",
@@ -489,14 +626,15 @@ def astro_home(req: HomeReq):
             "lon": req.lon,
             "ayanamsa": ayan_name,
             "ayanamsaValueDeg": float(ayan),
+            "includeDasha": bool(_safe_bool(req.includeDasha, False)),
         },
         "ayanamsa": {"value": float(ayan), "name": ayan_name},
         "ayanamsaValueDeg": float(ayan),
         "panchangam": None,
         "kundali": {"planets": kundali_planets, "bhavaCusps": bhava_cusps},
         "kp": {"ayanamsa": float(ayan), "grahaTable": kp_graha_table, "bhavaTable": kp_bhava_table},
-        "dasha": None,
-        "vimshottari": None,
+        "dasha": dasha_payload,
+        "vimshottari": vim_payload,
         "rulingPlanets": None,
     }
 
