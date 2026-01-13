@@ -5,21 +5,27 @@ Placidus house cusps (TROPICAL) via pure math (NO Swiss Ephemeris).
 IMPORTANT CONVENTIONS
 ---------------------
 • Longitude: +East, -West   (India = positive)
-• MC = true upper culmination (overhead point)
+• MC = TRUE astrological Midheaven (ecliptic longitude of meridian)
 • This module returns TROPICAL (SAYANA) values ONLY.
 • Apply ayanamsa (nirayana) ONLY in FRONTEND (MK requirement).
 
 MK FIX NOTES
 ------------
 1) ASC is coming 180° opposite but MC is correct:
-   → DO NOT change LON_SIGN (it would affect MC too).
+   → DO NOT change LON_SIGN (it would affect LST & everything).
    → Flip ONLY ASC by +180° and rebuild ASC-opposite houses (1 & 7).
 2) House orientation around MC:
    • 11th & 12th are on one side of 10th (MC)
    • 9th & 8th are on the other side
-   → So we solve 11/12 from (MC - 30/-60) and 9/8 from (MC + 30/+60) as per MK fix.
+   → We solve 11/12 from (MC - 30/-60) and 9/8 from (MC + 30/+60) as per MK fix.
 3) Ayanamsa must NOT be applied in backend:
-   → siderealize_cusps() intentionally disabled to prevent double-apply bugs.
+   → siderealize_cusps() intentionally NO-OP to prevent double-apply bugs.
+
+CRITICAL FIX (Jan 2026)
+----------------------
+✅ Your 10th cusp drift (~2°) was because MC formula ignored obliquity ε.
+Correct tropical MC needs ε:
+λ_MC = atan2( sinθ , cosθ * cosε )
 """
 
 import math
@@ -28,7 +34,7 @@ from typing import Dict, Tuple
 DEG2RAD = math.pi / 180.0
 RAD2DEG = 180.0 / math.pi
 
-# ✅ Keep India convention
+# ✅ Keep India convention (lon positive east)
 LON_SIGN = +1   # +1 = India convention (recommended)
 
 # ✅ MK: Flip ONLY ASC by 180°, keep MC as-is
@@ -95,17 +101,23 @@ def ecl_to_equ(lam: float, beta: float, eps: float) -> Tuple[float, float]:
 
 # ----------------- angles -----------------
 
-def mc_longitude_deg(theta: float) -> float:
+def mc_longitude_deg(theta: float, eps: float) -> float:
     """
-    TRUE astrological MC (tropical)
-    NOTE: obliquity ε is NOT used here
+    TRUE astrological MC (tropical).
+    Must use obliquity ε:
+      λ_MC = atan2( sinθ , cosθ * cosε )
     """
-    lam = math.atan2(math.sin(theta), math.cos(theta))
+    lam = math.atan2(math.sin(theta), math.cos(theta) * math.cos(eps))
     return _wrap360(lam * RAD2DEG)
 
 
 def asc_longitude_deg(theta: float, eps: float, phi: float) -> float:
-    """Ascendant ecliptic longitude (tropical)"""
+    """
+    Ascendant ecliptic longitude (tropical)
+
+    (Your original implementation retained, because your MK pipeline
+     already assumes this + FLIP_ASC_180.)
+    """
     y = -math.cos(theta)
     x = math.sin(theta) * math.cos(eps) + math.tan(phi) * math.sin(eps)
     lam = math.atan2(y, x)
@@ -123,6 +135,14 @@ def _semi_diurnal_arc(phi: float, dec: float) -> float:
 def _solve_cusp(theta: float, eps: float, phi: float, guess_deg: float, frac: float) -> float:
     """
     Solve Placidus cusp numerically
+
+    theta = LST (rad)
+    eps   = obliquity (rad)
+    phi   = latitude (rad)
+    guess_deg = starting guess in degrees (tropical ecliptic longitude)
+    frac  = target fraction of semi-diurnal arc:
+            +1/3, +2/3 for 9/8
+            -1/3, -2/3 for 11/12
     """
     guess = _wrap360(guess_deg) * DEG2RAD
 
@@ -133,6 +153,7 @@ def _solve_cusp(theta: float, eps: float, phi: float, guess_deg: float, frac: fl
         h = _wrap_pi(theta - ra)
         return _wrap_pi(h - h_target)
 
+    # coarse scan near guess to find best starting point
     best = guess
     best_val = 1e9
 
@@ -143,6 +164,7 @@ def _solve_cusp(theta: float, eps: float, phi: float, guess_deg: float, frac: fl
             best_val = v
             best = lam
 
+    # secant solve
     x0 = (best - 2 * DEG2RAD) % (2 * math.pi)
     x1 = (best + 2 * DEG2RAD) % (2 * math.pi)
     y0 = f(x0)
@@ -172,12 +194,12 @@ def placidus_cusps(jd: float, lat_deg: float, lon_deg_east: float) -> Dict[str, 
     Ayanamsa must be applied in FRONTEND only.
     """
     eps = mean_obliquity_deg(jd) * DEG2RAD
-    phi = lat_deg * DEG2RAD
+    phi = float(lat_deg) * DEG2RAD
     theta = lst_rad(jd, lon_deg_east)
 
     # tropical raw
     asc = asc_longitude_deg(theta, eps, phi)
-    mc = mc_longitude_deg(theta)
+    mc = mc_longitude_deg(theta, eps)  # ✅ FIXED: includes obliquity
 
     # MK FIX: flip ONLY ASC by 180°, keep MC untouched
     if FLIP_ASC_180:
@@ -217,6 +239,7 @@ def placidus_cusps(jd: float, lat_deg: float, lon_deg_east: float) -> Dict[str, 
         "house12": h12,
     }
 
+
 def siderealize_cusps(cusps_trop: Dict[str, float], ayanamsa_deg: float) -> Dict[str, float]:
     """
     ✅ NO-OP BY DESIGN (MK requirement)
@@ -226,4 +249,3 @@ def siderealize_cusps(cusps_trop: Dict[str, float], ayanamsa_deg: float) -> Dict
     It will NOT apply ayanamsa and will NOT crash.
     """
     return cusps_trop
-
