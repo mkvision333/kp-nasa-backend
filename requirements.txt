@@ -28,3 +28,8 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.6.2
 uvicorn==0.38.0
+
+# ✅ Added for your nasa_ephemeris.py (Skyfield)
+jplephem==2.23
+sgp4==2.25
+skyfield==1.49
