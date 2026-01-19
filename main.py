@@ -4,8 +4,9 @@
 #     - signLord
 #     - nakIndex, nakName, nakLord
 #     - starName (alias to nakName)
-# - ✅ ADD: /api/astro/home also returns moonMeta (already safe for daily screens)
+# - ✅ ADD: /api/astro/home also returns moonMeta (safe for daily screens)
 # - ✅ Keeps: cache key fix, includeDasha tree build, timezone fix, sign/signName for cusps, occupies, etc.
+# - ❌ Does NOT add rashiphal endpoints yet (to keep deploy stable; we'll add after files exist)
 
 from datetime import datetime, timezone
 from fastapi import FastAPI, Query
@@ -549,10 +550,7 @@ def astro_home(req: HomeReq):
         g_sign_lord = SIGN_LORD_BY_SIGN.get(g_sign, "")
         g_house = house_from_lon_and_cusps(lon_sid, cusps_sid_map)
 
-        # KP star/sub based on sidereal lon
         star, sub, subsub = kp_star_sub_sub(lon_sid)
-
-        # Nakshatra name/lord
         nak_idx, nak_name, nak_lord = nakshatra_from_lon_sid(lon_sid)
 
         kundali_planets.append({
@@ -569,19 +567,16 @@ def astro_home(req: HomeReq):
             "sign": g_sign,
             "signName": g_sign_name,
             "signLord": g_sign_lord,
-
             "house": g_house,
 
-            # KP
             "starLord": star or "",
             "subLord": sub or "",
             "subSubLord": subsub or "",
 
-            # Nakshatra (StarName)
             "nakIndex": int(nak_idx),
             "nakName": nak_name,
             "nakLord": nak_lord,
-            "starName": nak_name,  # alias (UI friendly)
+            "starName": nak_name,  # alias
 
             "signifies": [],
             "star_signifies": [],
@@ -614,7 +609,6 @@ def astro_home(req: HomeReq):
             "sign": g_sign,
             "signName": g_sign_name,
             "signLord": g_sign_lord,
-
             "house": g_house,
 
             "starLord": star or "",
@@ -631,7 +625,7 @@ def astro_home(req: HomeReq):
             "occupies": [g_house],
         })
 
-    # --- bhava cusps tables (leave untouched as you asked) ---
+    # --- bhava cusps tables (untouched) ---
     bhava_cusps: List[Dict[str, Any]] = []
     kp_bhava_table: List[Dict[str, Any]] = []
 
@@ -695,7 +689,7 @@ def astro_home(req: HomeReq):
         "ayanamsa": {"value": float(ayan), "name": ayan_name},
         "ayanamsaValueDeg": float(ayan),
 
-        # ✅ daily screens
+        # ✅ daily screens use this (no extra endpoint needed)
         "moonMeta": moon_meta,
 
         "panchangam": None,
