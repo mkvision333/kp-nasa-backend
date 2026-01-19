@@ -1,3 +1,11 @@
+# app/core/nasa_ephemeris.py  ✅ FULL REPLACE
+# ✅ Fixes:
+# - Robust UTC ISO parsing (handles "Z" and offsets safely)
+# - Robust t_plus/t_minus using timedelta (no minute rollover bugs)
+# - Keeps planets GEOCENTRIC (earth.at(t)) as you want
+# - Uses apparent() + ecliptic_frame (standard astrology-style)
+# - Stable speed calculation (deg/day) without affecting lon output
+
 try:
     from skyfield.api import load
 except Exception as e:
@@ -5,7 +13,7 @@ except Exception as e:
     raise
 
 from skyfield.framelib import ecliptic_frame
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import math
 
 # Global cache (loads once)
@@ -46,10 +54,31 @@ def _jd_T(jd: float) -> float:
     return (jd - 2451545.0) / 36525.0
 
 
+def _parse_utc_iso(datetime_utc_iso: str) -> datetime:
+    """
+    Accepts:
+      - "YYYY-MM-DDTHH:MM:SSZ"
+      - "YYYY-MM-DDTHH:MM:SS+00:00"
+      - or naive string (treated as UTC)
+    Returns timezone-aware UTC datetime.
+    """
+    s = (datetime_utc_iso or "").strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+
+    if dt.tzinfo is None:
+        # treat as UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+
+    # remove microseconds for consistent reproducibility (optional)
+    return dt.replace(microsecond=0)
+
+
 # ---------------------------------------------------------
 # ✅ Lahiri/KP Ayanamsa (Approx, date-based)
-# NOTE: This is a practical approximation.
-# Later we can calibrate by comparing with your old KP backend.
 # ---------------------------------------------------------
 def ayanamsa_lahiri_approx_deg(jd_ut: float) -> float:
     """
@@ -57,8 +86,6 @@ def ayanamsa_lahiri_approx_deg(jd_ut: float) -> float:
     Typical value around ~24° in 2025.
     """
     T = _jd_T(jd_ut)
-    # Base Lahiri at J2000 (approx): 23.85675°
-    # Precession rate approx: 50.290966 arcsec/year
     years = T * 100.0
     rate_deg_per_year = 50.290966 / 3600.0
     ay = 23.85675 + (years * rate_deg_per_year)
@@ -70,7 +97,6 @@ def ayanamsa_lahiri_approx_deg(jd_ut: float) -> float:
 # ---------------------------------------------------------
 def mean_lunar_node_tropical_deg(jd_ut: float) -> float:
     T = _jd_T(jd_ut)
-    # Ω = 125.04452 - 1934.136261*T + 0.0020708*T^2 + T^3/450000
     Om = (
         125.04452
         - 1934.136261 * T
@@ -85,7 +111,6 @@ def mean_lunar_node_tropical_deg(jd_ut: float) -> float:
 # ---------------------------------------------------------
 def mean_obliquity_deg(jd_ut: float) -> float:
     T = _jd_T(jd_ut)
-    # seconds
     eps0 = 84381.448 - 46.8150 * T - 0.00059 * (T * T) + 0.001813 * (T * T * T)
     return eps0 / 3600.0
 
@@ -110,9 +135,6 @@ def lst_deg(jd_ut: float, lon_deg_east: float) -> float:
 
 # ---------------------------------------------------------
 # ✅ Ascendant tropical longitude (deg)
-# Formula:
-# asc = atan2( sin(θ)*cosε - tanφ*sinε, cosθ )
-# where θ=LST, φ=lat, ε=obliquity
 # ---------------------------------------------------------
 def ascendant_tropical_deg(jd_ut: float, lat_deg: float, lon_deg_east: float) -> float:
     theta = math.radians(lst_deg(jd_ut, lon_deg_east))
@@ -126,70 +148,77 @@ def ascendant_tropical_deg(jd_ut: float, lat_deg: float, lon_deg_east: float) ->
 
 
 def equal_house_cusps_sidereal(asc_sid_deg: float) -> list:
-    # 12 cusps (equal houses): 1st = asc, then +30°
     return [_wrap360(asc_sid_deg + i * 30.0) for i in range(12)]
 
 
+def _signed_lon_diff(a: float, b: float) -> float:
+    """
+    Signed smallest difference a-b in degrees, in [-180, +180]
+    """
+    d = (a - b) % 360.0
+    if d > 180.0:
+        d -= 360.0
+    return d
+
+
 # ---------------------------------------------------------
-# ✅ Planet positions tropical (NASA) with speed
+# ✅ Planet positions tropical (Skyfield/JPL) with speed
 # ---------------------------------------------------------
 def get_planets_ecliptic(datetime_utc_iso: str, lat: float, lng: float):
     """
-    Returns ecliptic longitude/latitude for planets as seen from geocenter (Earth center),
+    Returns ecliptic longitude/latitude for planets as seen from GEOCENTER (Earth center),
     and approx speed in deg/day for longitude (finite difference).
+    lat/lng kept for backward compatibility (not used for planets).
     """
     _ensure_loaded()
 
-    # Parse UTC ISO "YYYY-MM-DDTHH:MM:SSZ"
-    if datetime_utc_iso.endswith("Z"):
-        datetime_utc_iso = datetime_utc_iso[:-1]
-    dt = datetime.fromisoformat(datetime_utc_iso)
+    dt = _parse_utc_iso(datetime_utc_iso)
 
-    t = _TS.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
+    # Create skyfield time safely
+    t = _TS.from_datetime(dt)
 
     earth = _EPH["earth"]
-    observer = earth  # geocentric
+    observer = earth  # ✅ GEOCENTER
+
+    # Speed approx using ±60 seconds (stable, no rollovers)
+    dt_plus = dt + timedelta(seconds=60)
+    dt_minus = dt - timedelta(seconds=60)
+    t_plus = _TS.from_datetime(dt_plus)
+    t_minus = _TS.from_datetime(dt_minus)
 
     results = []
 
-    # Speed approx: longitude(t+1min) - longitude(t-1min) scaled to deg/day
-    t_plus = _TS.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute + 1, dt.second)
-    t_minus = _TS.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute - 1, dt.second)
-
     for disp, key in PLANETS:
         body = _EPH[key]
-        astrometric = observer.at(t).observe(body).apparent()
 
-        # Ecliptic position
-        ecl = astrometric.frame_latlon(ecliptic_frame)
+        # Apparent geocentric position
+        ast = observer.at(t).observe(body).apparent()
+        ecl = ast.frame_latlon(ecliptic_frame)
         lon = _wrap360(ecl[1].degrees)
         lat_e = float(ecl[0].degrees)
-        dist = float(astrometric.distance().au)
+        dist = float(ast.distance().au)
 
-        # speed approx in deg/day
-        ecl_p = observer.at(t_plus).observe(body).apparent().frame_latlon(ecliptic_frame)
-        ecl_m = observer.at(t_minus).observe(body).apparent().frame_latlon(ecliptic_frame)
-        lon_p = _wrap360(ecl_p[1].degrees)
-        lon_m = _wrap360(ecl_m[1].degrees)
+        # Speed (deg/day) using ±60 sec
+        ast_p = observer.at(t_plus).observe(body).apparent()
+        ast_m = observer.at(t_minus).observe(body).apparent()
+        lon_p = _wrap360(ast_p.frame_latlon(ecliptic_frame)[1].degrees)
+        lon_m = _wrap360(ast_m.frame_latlon(ecliptic_frame)[1].degrees)
 
-        d = lon_p - lon_m
-        if d > 180:
-            d -= 360
-        if d < -180:
-            d += 360
-
-        speed_lon = float((d / 2.0) * 1440.0)
+        # delta over 120 seconds
+        d = _signed_lon_diff(lon_p, lon_m)  # degrees over 120 sec
+        # Convert to deg/day: (deg / 120sec) * 86400sec/day
+        speed_lon = float(d * (86400.0 / 120.0))
 
         results.append(
             {
                 "name": disp,
-                "lon": lon,
+                "lon": float(lon),
                 "lat": lat_e,
                 "dist_au": dist,
                 "speed_lon": speed_lon,
             }
         )
 
-    # JD-UT from Skyfield
-    jd_ut = float(t.ut1)  # ok for astrology pipelines
+    # JD-UT (use UT1 close to UT; stable for your Meeus formulas)
+    jd_ut = float(t.ut1)
     return jd_ut, results
