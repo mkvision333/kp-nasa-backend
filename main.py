@@ -131,19 +131,24 @@ def norm360(x: float) -> float:
     return x if x >= 0 else x + 360.0
 
 def _abs_to_dms(abs_deg: float) -> Dict[str, int]:
-    a = abs_deg % 360.0
-    deg = int(a)
-    mfloat = (a - deg) * 60.0
-    minute = int(mfloat)
-    sec = int(round((mfloat - minute) * 60.0))
-    if sec >= 60:
-        sec -= 60
-        minute += 1
-    if minute >= 60:
-        minute -= 60
-        deg += 1
-    deg = deg % 360
-    return {"deg": deg, "min": minute, "sec": sec}
+    """
+    Stable DMS conversion for 0..360 longitudes.
+    Avoids rounding carry drift (+/- seconds/minutes) across planets.
+    """
+    a = norm360(float(abs_deg))
+
+    # total seconds in circle, rounded to nearest integer second
+    total_sec = int(round(a * 3600.0))
+
+    # keep in [0, 360*3600)
+    total_sec = total_sec % int(360 * 3600)
+
+    deg = total_sec // 3600
+    rem = total_sec % 3600
+    minute = rem // 60
+    sec = rem % 60
+
+    return {"deg": int(deg), "min": int(minute), "sec": int(sec)}
 
 def normalize_ayanamsa_name(v: Optional[str]) -> str:
     s = str(v or "KP").strip().upper()
