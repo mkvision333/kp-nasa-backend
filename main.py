@@ -1,13 +1,11 @@
 # main.py ✅ (FULL REPLACE)
-# ✅ Updates in this version:
-# - ✅ FIX: /api/astro/home cache key now includes includeDasha + flags (no more "dasha stuck missing" cache)
-# - ✅ NEW: If includeDasha=True, HOME API will build Vimshottari tree (Mahadasha → Bhukti → Antara → Sukshma)
-#         so PDF కి dashaRoot ఖచ్చితంగా వస్తుంది (lazy-load ఉన్నా PDF కోసం on-demand)
-# - Fixes timezone endpoint variable bug (_TF_OK → _TZF_OK)
-# - Adds sign/signLord/signName for KP bhavaTable + kundali bhavaCusps
-# - Adds graha occupied house + sign (+ occupies array) for KP grahaTable (incl Rahu/Ketu)
-# - Keeps startup warm, /health, /debug/routes, editorial JSON, caching, nasa, placidus, panchangam, dasha APIs
-# - No extra dependencies; safe fallbacks; should run without errors
+# ✅ Updates in this version (SAFE, non-breaking):
+# - ✅ ADD: kp.grahaTable planets now include:
+#     - signLord
+#     - nakIndex, nakName, nakLord
+#     - starName (alias to nakName)
+# - ✅ ADD: /api/astro/home also returns moonMeta (already safe for daily screens)
+# - ✅ Keeps: cache key fix, includeDasha tree build, timezone fix, sign/signName for cusps, occupies, etc.
 
 from datetime import datetime, timezone
 from fastapi import FastAPI, Query
@@ -177,7 +175,7 @@ def _make_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayanamsa: str
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 # -----------------------------
-# ✅ Sign helpers (NEW)
+# ✅ Sign helpers
 # -----------------------------
 SIGN_NAMES = [
     "", "Mesha", "Vrishabha", "Mithuna", "Karkataka", "Simha", "Kanya",
@@ -231,6 +229,62 @@ def house_from_lon_and_cusps(lon: float, cusps_sid_by_house: Dict[int, float]) -
             return 12
     return 12
 
+# -----------------------------
+# ✅ Nakshatra helpers (NEW)
+# -----------------------------
+NAK_NAMES = [
+    "Ashwini","Bharani","Krittika","Rohini","Mrigashirsha","Ardra","Punarvasu","Pushya","Ashlesha",
+    "Magha","Purva Phalguni","Uttara Phalguni","Hasta","Chitra","Swati","Vishakha","Anuradha","Jyeshtha",
+    "Mula","Purva Ashadha","Uttara Ashadha","Shravana","Dhanishta","Shatabhisha","Purva Bhadrapada","Uttara Bhadrapada","Revati"
+]
+NAK_LORDS = [
+    "Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury",
+    "Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury",
+    "Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury"
+]
+
+def nakshatra_from_lon_sid(lon_sid: float):
+    x = norm360(float(lon_sid))
+    idx = int(x // (360.0 / 27.0))  # 0..26
+    idx = max(0, min(26, idx))
+    return idx, NAK_NAMES[idx], NAK_LORDS[idx]
+
+def _build_moon_meta(planets_tropical: List[Dict[str, Any]], ayan_deg: float) -> Optional[Dict[str, Any]]:
+    """
+    SAFE: returns moonMeta or None
+    moonMeta includes sidereal lon, rashiIndex(0..11), rashiName, nakIndex(0..26), nakName, nakLord
+    """
+    try:
+        moon_trop = None
+        for p in planets_tropical or []:
+            if str(p.get("name", "")).strip().lower() == "moon":
+                moon_trop = float(p.get("lon", 0.0)) % 360.0
+                break
+        if moon_trop is None:
+            return None
+
+        moon_sid = norm360(float(moon_trop) - float(ayan_deg))
+
+        rashi_idx0 = int(moon_sid // 30.0)
+        rashi_idx0 = max(0, min(11, rashi_idx0))
+        rashi_name = SIGN_NAMES[rashi_idx0 + 1]
+
+        nak_idx, nak_name, nak_lord = nakshatra_from_lon_sid(moon_sid)
+
+        return {
+            "moonLonTropicalDeg": float(moon_trop),
+            "moonLonSiderealDeg": float(moon_sid),
+
+            "moonRashiIndex": int(rashi_idx0),   # 0..11
+            "moonRashiName": str(rashi_name),
+
+            "nakIndex": int(nak_idx),            # 0..26
+            "nakName": str(nak_name),
+            "nakLord": str(nak_lord),
+        }
+    except Exception:
+        return None
+
 # -------------------------------------------------
 # In-memory cache
 # -------------------------------------------------
@@ -283,7 +337,6 @@ def nasa_positions(req: NASAReq):
 
         enriched.append({**p, "starLord": star, "subLord": sub, "subSubLord": subsub})
 
-    # Optional: Rahu/Ketu based on Moon
     if moon_lon is not None:
         rahu_lon, ketu_lon = calc_rahu_ketu(moon_lon)
         r_star, r_sub, r_ss = kp_star_sub_sub(rahu_lon)
@@ -365,12 +418,6 @@ def _build_home_dasha_tree_upto_sukshma(
     planets_tropical: List[Dict[str, Any]],
     ayan_deg: float,
 ) -> Dict[str, Any]:
-    """
-    Builds Vimshottari tree: Mahadasha → Bhukti → Antara → Sukshma
-    Output shape matches homePdf pickChildren:
-      root = {"tree":[{lord,start,end,bhukti:[{lord,start,end,antara:[{...sukshma:[...]}]}]}]}
-    """
-    # Find Moon tropical lon
     moon_trop = None
     for p in planets_tropical or []:
         if str(p.get("name", "")).strip().lower() == "moon":
@@ -385,7 +432,6 @@ def _build_home_dasha_tree_upto_sukshma(
 
     start_utc = datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
 
-    # Mahadasha list (9 items)
     maha_list = build_mahadasha_list_120y_9items(
         start_utc=start_utc,
         maha_lord=str(maha_lord),
@@ -400,7 +446,6 @@ def _build_home_dasha_tree_upto_sukshma(
 
         node_md: Dict[str, Any] = {"lord": md_lord, "start": md_start, "end": md_end, "bhukti": []}
 
-        # Build Bhukti under this MD
         try:
             b_list = build_level_list("bhukti", _iso_to_dt(md_start), _iso_to_dt(md_end), md_lord) or []
         except Exception:
@@ -413,7 +458,6 @@ def _build_home_dasha_tree_upto_sukshma(
             b_end = str(b.get("end") or b.get("to") or "").strip()
             node_b: Dict[str, Any] = {"lord": b_lord, "start": b_start, "end": b_end, "antara": []}
 
-            # Build Antara under this Bhukti
             try:
                 a_list = build_level_list("antara", _iso_to_dt(b_start), _iso_to_dt(b_end), b_lord) or []
             except Exception:
@@ -426,7 +470,6 @@ def _build_home_dasha_tree_upto_sukshma(
                 a_end = str(a.get("end") or a.get("to") or "").strip()
                 node_a: Dict[str, Any] = {"lord": a_lord, "start": a_start, "end": a_end, "sukshma": []}
 
-                # Build Sukshma under this Antara
                 try:
                     s_list = build_level_list("sukshma", _iso_to_dt(a_start), _iso_to_dt(a_end), a_lord) or []
                 except Exception:
@@ -450,10 +493,7 @@ def _build_home_dasha_tree_upto_sukshma(
 
     return {
         "tree": maha_nodes,
-        "meta": {
-            "utc_iso": utc_iso,
-            "jd_ut": jd_ut,
-        },
+        "meta": {"utc_iso": utc_iso, "jd_ut": jd_ut},
         "note": "Built in HOME includeDasha=True (Mahadasha→Bhukti→Antara→Sukshma)",
     }
 
@@ -461,8 +501,6 @@ def _build_home_dasha_tree_upto_sukshma(
 def astro_home(req: HomeReq):
     ayan_name = normalize_ayanamsa_name(req.ayanamsa)
 
-    # ✅ IMPORTANT FIX:
-    # Base key (datetime + place + ayanamsa) + flags so cache never returns "no-dasha" for includeDasha requests
     base_key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
     key = (
         base_key
@@ -481,6 +519,9 @@ def astro_home(req: HomeReq):
     jd_ut, planets = get_planets_ecliptic(utc_iso, req.lat, req.lon)
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
 
+    # ✅ moonMeta for daily usage
+    moon_meta = _build_moon_meta(planets_tropical=planets, ayan_deg=float(ayan))
+
     # --- cusps (trop -> sidereal) ---
     cusps_trop = placidus_cusps(jd_ut, req.lat, req.lon)
     cusps_sid: Dict[str, Any] = {}
@@ -490,7 +531,6 @@ def astro_home(req: HomeReq):
         except Exception:
             cusps_sid[k] = v
 
-    # sidereal cusp map 1..12 (needed for occupied house)
     cusps_sid_map: Dict[int, float] = {}
     for i in range(1, 13):
         cusps_sid_map[i] = float(cusps_sid.get(f"house{i}", 0.0))
@@ -505,10 +545,15 @@ def astro_home(req: HomeReq):
         dms = _abs_to_dms(lon_sid)
 
         g_sign = sign_from_lon_deg(lon_sid)
+        g_sign_name = SIGN_NAMES[g_sign]
+        g_sign_lord = SIGN_LORD_BY_SIGN.get(g_sign, "")
         g_house = house_from_lon_and_cusps(lon_sid, cusps_sid_map)
 
-        # KP star/sub based on sidereal lon (simple & consistent)
+        # KP star/sub based on sidereal lon
         star, sub, subsub = kp_star_sub_sub(lon_sid)
+
+        # Nakshatra name/lord
+        nak_idx, nak_name, nak_lord = nakshatra_from_lon_sid(lon_sid)
 
         kundali_planets.append({
             "planet": name,
@@ -522,12 +567,21 @@ def astro_home(req: HomeReq):
             "retro": float(p.get("speed_lon", 0.0)) < 0,
 
             "sign": g_sign,
-            "signName": SIGN_NAMES[g_sign],
+            "signName": g_sign_name,
+            "signLord": g_sign_lord,
+
             "house": g_house,
 
+            # KP
             "starLord": star or "",
             "subLord": sub or "",
             "subSubLord": subsub or "",
+
+            # Nakshatra (StarName)
+            "nakIndex": int(nak_idx),
+            "nakName": nak_name,
+            "nakLord": nak_lord,
+            "starName": nak_name,  # alias (UI friendly)
 
             "signifies": [],
             "star_signifies": [],
@@ -542,9 +596,14 @@ def astro_home(req: HomeReq):
 
     for name, lon in [("Rahu", rahu_sid), ("Ketu", ketu_sid)]:
         dms = _abs_to_dms(lon)
+
         g_sign = sign_from_lon_deg(lon)
+        g_sign_name = SIGN_NAMES[g_sign]
+        g_sign_lord = SIGN_LORD_BY_SIGN.get(g_sign, "")
         g_house = house_from_lon_and_cusps(lon, cusps_sid_map)
+
         star, sub, subsub = kp_star_sub_sub(lon)
+        nak_idx, nak_name, nak_lord = nakshatra_from_lon_sid(lon)
 
         kundali_planets.append({"planet": name, "longitude": dms, "retro": True})
         kp_graha_table.append({
@@ -553,19 +612,26 @@ def astro_home(req: HomeReq):
             "retro": True,
 
             "sign": g_sign,
-            "signName": SIGN_NAMES[g_sign],
+            "signName": g_sign_name,
+            "signLord": g_sign_lord,
+
             "house": g_house,
 
             "starLord": star or "",
             "subLord": sub or "",
             "subSubLord": subsub or "",
 
+            "nakIndex": int(nak_idx),
+            "nakName": nak_name,
+            "nakLord": nak_lord,
+            "starName": nak_name,
+
             "signifies": [],
             "star_signifies": [],
             "occupies": [g_house],
         })
 
-    # --- bhava cusps tables (with sign + signLord) ---
+    # --- bhava cusps tables (leave untouched as you asked) ---
     bhava_cusps: List[Dict[str, Any]] = []
     kp_bhava_table: List[Dict[str, Any]] = []
 
@@ -577,7 +643,6 @@ def astro_home(req: HomeReq):
         sgn = sign_from_lon_deg(lon_sid)
         sgn_lord = SIGN_LORD_BY_SIGN.get(sgn, "")
 
-        # KP lords for cusp position
         c_star, c_sub, c_ss = kp_star_sub_sub(lon_sid)
 
         bhava_cusps.append({
@@ -599,7 +664,7 @@ def astro_home(req: HomeReq):
             "subSubLord": c_ss or "",
         })
 
-    # ✅ If includeDasha=True, build tree for PDF (Mahadasha→Bhukti→Antara→Sukshma)
+    # ✅ If includeDasha=True, build tree
     dasha_payload = None
     vim_payload = None
     if _safe_bool(req.includeDasha, False):
@@ -610,7 +675,6 @@ def astro_home(req: HomeReq):
                 planets_tropical=planets,
                 ayan_deg=float(ayan),
             )
-            # Keep compatibility: some apps read vimshottari.tree
             vim_payload = dasha_payload
         except Exception as e:
             dasha_payload = {"tree": [], "error": str(e)}
@@ -630,6 +694,10 @@ def astro_home(req: HomeReq):
         },
         "ayanamsa": {"value": float(ayan), "name": ayan_name},
         "ayanamsaValueDeg": float(ayan),
+
+        # ✅ daily screens
+        "moonMeta": moon_meta,
+
         "panchangam": None,
         "kundali": {"planets": kundali_planets, "bhavaCusps": bhava_cusps},
         "kp": {"ayanamsa": float(ayan), "grahaTable": kp_graha_table, "bhavaTable": kp_bhava_table},
