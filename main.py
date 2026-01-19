@@ -1,12 +1,8 @@
-# main.py ✅ (FULL REPLACE)
-# ✅ Updates in this version (SAFE, non-breaking):
-# - ✅ ADD: kp.grahaTable planets now include:
-#     - signLord
-#     - nakIndex, nakName, nakLord
-#     - starName (alias to nakName)
-# - ✅ ADD: /api/astro/home also returns moonMeta (safe for daily screens)
-# - ✅ Keeps: cache key fix, includeDasha tree build, timezone fix, sign/signName for cusps, occupies, etc.
-# - ❌ Does NOT add rashiphal endpoints yet (to keep deploy stable; we'll add after files exist)
+# main.py ✅ (PART 1/2 - FIRST HALF)
+# ✅ SAFE, non-breaking patch set:
+# - ADD: kp_star_sub_sub_v2() -> TRUE KP proportional Sub/SubSub calculation
+# - Keeps existing endpoints, caching, dasha, etc.
+# - NOTE: Part-2 will apply V2 inside /api/astro/home grahaTable generation.
 
 from datetime import datetime, timezone
 from fastapi import FastAPI, Query
@@ -18,6 +14,13 @@ import hashlib
 import time
 import os
 import json
+
+# (optional) rashiphal module (only if you created it)
+try:
+    from app.core.rashiphal import build_daily_rashiphal, to_json
+except Exception:
+    build_daily_rashiphal = None
+    to_json = None
 
 # ✅ TimezoneFinder (SAFE import)
 try:
@@ -39,6 +42,7 @@ from app.core.nasa_ephemeris import (
 )
 
 from app.core.rahu_ketu import calc_rahu_ketu
+# keep your original import (used in cusps + optional legacy)
 from app.core.kp_calc import kp_star_sub_sub
 
 from app.core.houses_models import PlacidusReq, PlacidusResp
@@ -92,10 +96,6 @@ def debug_routes():
 # -------------------------------------------------
 @app.get("/timezone")
 def timezone_lookup(lat: float = Query(...), lon: float = Query(...)):
-    """
-    Returns IANA timezone for a lat/lon.
-    Example: Europe/London, Asia/Tokyo, America/New_York
-    """
     if not _TZF_OK:
         return {"tz": "UTC", "ok": False, "message": f"timezonefinder missing: {_TZF_ERR}"}
 
@@ -203,10 +203,6 @@ def sign_from_lon_deg(lon: float) -> int:
     return int(d // 30) + 1  # 1..12
 
 def house_from_lon_and_cusps(lon: float, cusps_sid_by_house: Dict[int, float]) -> int:
-    """
-    cusps_sid_by_house: {1:deg,2:deg,...,12:deg} sidereal
-    returns occupied house 1..12 (cusp segment logic)
-    """
     lon = norm360(float(lon))
     cusp = {int(k): norm360(float(v)) for k, v in cusps_sid_by_house.items()}
 
@@ -231,7 +227,7 @@ def house_from_lon_and_cusps(lon: float, cusps_sid_by_house: Dict[int, float]) -
     return 12
 
 # -----------------------------
-# ✅ Nakshatra helpers (NEW)
+# ✅ Nakshatra helpers
 # -----------------------------
 NAK_NAMES = [
     "Ashwini","Bharani","Krittika","Rohini","Mrigashirsha","Ardra","Punarvasu","Pushya","Ashlesha",
@@ -250,11 +246,64 @@ def nakshatra_from_lon_sid(lon_sid: float):
     idx = max(0, min(26, idx))
     return idx, NAK_NAMES[idx], NAK_LORDS[idx]
 
+# -----------------------------
+# ✅ TRUE KP Sub/SubSub (V2) - proportional Vimshottari subdivision
+# -----------------------------
+VIM_ORDER = ["Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury"]
+VIM_YEARS = {"Ketu":7,"Venus":20,"Sun":6,"Moon":10,"Mars":7,"Rahu":18,"Jupiter":16,"Saturn":19,"Mercury":17}
+NAK_SPAN = 360.0 / 27.0  # 13°20'
+
+def _cycle_from(lord: str) -> List[str]:
+    lord = str(lord or "").strip()
+    if lord not in VIM_ORDER:
+        return VIM_ORDER[:]
+    i = VIM_ORDER.index(lord)
+    return VIM_ORDER[i:] + VIM_ORDER[:i]
+
+def kp_star_sub_sub_v2(lon_sid: float):
+    """
+    Returns:
+      (starLord, subLord, subSubLord, nakIndex, nakName)
+    starLord = Nakshatra Lord
+    """
+    x = norm360(float(lon_sid))
+    nak_index = int(x // NAK_SPAN)  # 0..26
+    nak_index = max(0, min(26, nak_index))
+
+    nak_name = NAK_NAMES[nak_index]
+    star_lord = NAK_LORDS[nak_index]
+
+    # offset inside nakshatra
+    nak_start = nak_index * NAK_SPAN
+    offset = x - nak_start  # 0..NAK_SPAN
+
+    # SubLord
+    seq1 = _cycle_from(star_lord)
+    rem = offset
+    sub_lord = seq1[0]
+    sub_span = NAK_SPAN
+    for L in seq1:
+        seg = NAK_SPAN * (VIM_YEARS[L] / 120.0)
+        if rem < seg:
+            sub_lord = L
+            sub_span = seg
+            break
+        rem -= seg
+
+    # SubSubLord
+    seq2 = _cycle_from(sub_lord)
+    rem2 = rem
+    subsub_lord = seq2[0]
+    for L in seq2:
+        seg2 = sub_span * (VIM_YEARS[L] / 120.0)
+        if rem2 < seg2:
+            subsub_lord = L
+            break
+        rem2 -= seg2
+
+    return star_lord, sub_lord, subsub_lord, nak_index, nak_name
+
 def _build_moon_meta(planets_tropical: List[Dict[str, Any]], ayan_deg: float) -> Optional[Dict[str, Any]]:
-    """
-    SAFE: returns moonMeta or None
-    moonMeta includes sidereal lon, rashiIndex(0..11), rashiName, nakIndex(0..26), nakName, nakLord
-    """
     try:
         moon_trop = None
         for p in planets_tropical or []:
@@ -275,10 +324,8 @@ def _build_moon_meta(planets_tropical: List[Dict[str, Any]], ayan_deg: float) ->
         return {
             "moonLonTropicalDeg": float(moon_trop),
             "moonLonSiderealDeg": float(moon_sid),
-
             "moonRashiIndex": int(rashi_idx0),   # 0..11
             "moonRashiName": str(rashi_name),
-
             "nakIndex": int(nak_idx),            # 0..26
             "nakName": str(nak_name),
             "nakLord": str(nak_lord),
@@ -310,7 +357,6 @@ def _cache_get(key: str):
 def _cache_set(key: str, data: Any):
     _gc()
     _CACHE[key] = {"_ts": time.time(), "data": data}
-
 # -------------------------------------------------
 # NASA API (cached)
 # -------------------------------------------------
@@ -331,6 +377,7 @@ def nasa_positions(req: NASAReq):
 
     for p in planets:
         lon = float(p["lon"])
+        # NOTE: nasa endpoint kept as-is (tropical lon). Home uses sidereal.
         star, sub, subsub = kp_star_sub_sub(lon)
 
         if p["name"] == "Moon":
@@ -356,6 +403,7 @@ def nasa_positions(req: NASAReq):
     _cache_set(f"nasa:{key}", out)
     return out
 
+
 # -------------------------------------------------
 # Placidus API
 # -------------------------------------------------
@@ -364,6 +412,7 @@ def placidus_houses(req: PlacidusReq):
     cusps_trop = placidus_cusps(req.jd_ut, req.lat, req.lng)
     cusps_sid = siderealize_cusps(cusps_trop, req.ayanamsa_deg)
     return {"cusps_tropical": cusps_trop, "cusps_sidereal": cusps_sid}
+
 
 # -------------------------------------------------
 # Panchangam API
@@ -389,6 +438,7 @@ def astro_panchangam(req: PanchangamReq):
         lon=req.lon,
         ayan_deg=float(ayan),
     )
+
 
 # -------------------------------------------------
 # HOME API (cached)
@@ -498,6 +548,7 @@ def _build_home_dasha_tree_upto_sukshma(
         "note": "Built in HOME includeDasha=True (Mahadasha→Bhukti→Antara→Sukshma)",
     }
 
+
 @app.post("/api/astro/home")
 def astro_home(req: HomeReq):
     ayan_name = normalize_ayanamsa_name(req.ayanamsa)
@@ -520,7 +571,7 @@ def astro_home(req: HomeReq):
     jd_ut, planets = get_planets_ecliptic(utc_iso, req.lat, req.lon)
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
 
-    # ✅ moonMeta for daily usage
+    # ✅ moonMeta (safe)
     moon_meta = _build_moon_meta(planets_tropical=planets, ayan_deg=float(ayan))
 
     # --- cusps (trop -> sidereal) ---
@@ -550,8 +601,9 @@ def astro_home(req: HomeReq):
         g_sign_lord = SIGN_LORD_BY_SIGN.get(g_sign, "")
         g_house = house_from_lon_and_cusps(lon_sid, cusps_sid_map)
 
-        star, sub, subsub = kp_star_sub_sub(lon_sid)
-        nak_idx, nak_name, nak_lord = nakshatra_from_lon_sid(lon_sid)
+        # ✅ TRUE KP logic (V2) for star/sub/subsub (fixes your Moon case)
+        starL, subL, subsubL, nak_idx, nak_name = kp_star_sub_sub_v2(lon_sid)
+        nak_lord = NAK_LORDS[int(nak_idx)]
 
         kundali_planets.append({
             "planet": name,
@@ -567,16 +619,19 @@ def astro_home(req: HomeReq):
             "sign": g_sign,
             "signName": g_sign_name,
             "signLord": g_sign_lord,
+
             "house": g_house,
 
-            "starLord": star or "",
-            "subLord": sub or "",
-            "subSubLord": subsub or "",
+            # ✅ KP (correct)
+            "starLord": starL or "",
+            "subLord": subL or "",
+            "subSubLord": subsubL or "",
 
+            # Nakshatra
             "nakIndex": int(nak_idx),
             "nakName": nak_name,
             "nakLord": nak_lord,
-            "starName": nak_name,  # alias
+            "starName": nak_name,
 
             "signifies": [],
             "star_signifies": [],
@@ -597,8 +652,9 @@ def astro_home(req: HomeReq):
         g_sign_lord = SIGN_LORD_BY_SIGN.get(g_sign, "")
         g_house = house_from_lon_and_cusps(lon, cusps_sid_map)
 
-        star, sub, subsub = kp_star_sub_sub(lon)
-        nak_idx, nak_name, nak_lord = nakshatra_from_lon_sid(lon)
+        # ✅ TRUE KP logic (V2)
+        starL, subL, subsubL, nak_idx, nak_name = kp_star_sub_sub_v2(lon)
+        nak_lord = NAK_LORDS[int(nak_idx)]
 
         kundali_planets.append({"planet": name, "longitude": dms, "retro": True})
         kp_graha_table.append({
@@ -609,11 +665,12 @@ def astro_home(req: HomeReq):
             "sign": g_sign,
             "signName": g_sign_name,
             "signLord": g_sign_lord,
+
             "house": g_house,
 
-            "starLord": star or "",
-            "subLord": sub or "",
-            "subSubLord": subsub or "",
+            "starLord": starL or "",
+            "subLord": subL or "",
+            "subSubLord": subsubL or "",
 
             "nakIndex": int(nak_idx),
             "nakName": nak_name,
@@ -689,7 +746,6 @@ def astro_home(req: HomeReq):
         "ayanamsa": {"value": float(ayan), "name": ayan_name},
         "ayanamsaValueDeg": float(ayan),
 
-        # ✅ daily screens use this (no extra endpoint needed)
         "moonMeta": moon_meta,
 
         "panchangam": None,
@@ -702,6 +758,7 @@ def astro_home(req: HomeReq):
 
     _cache_set(f"home:{key}", resp)
     return resp
+
 
 # -------------------------------------------------
 # LAZY DASHA APIs (unchanged)
