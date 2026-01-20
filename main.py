@@ -37,7 +37,7 @@ from app.core.models import NASAReq, NASAResp
 from app.core.jd import local_to_utc_iso
 from app.core.nasa_ephemeris import (
     get_planets_ecliptic,
-    ayanamsa_lahiri_approx_deg,
+    from app.core.ayanamsa_exact import get_ayanamsa_deg
     mean_lunar_node_tropical_deg,
 )
 
@@ -157,7 +157,7 @@ def normalize_ayanamsa_name(v: Optional[str]) -> str:
     return "KP"
 
 def pick_ayanamsa_deg(jd_ut: float, ayanamsa_name: str) -> float:
-    lahiri = float(ayanamsa_lahiri_approx_deg(jd_ut))
+    lahiri = float(get_ayanamsa_deg(jd_ut, "LAHIRI"))
     if ayanamsa_name == "KP":
         return lahiri - 0.1015
     return lahiri
