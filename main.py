@@ -37,7 +37,7 @@ from app.core.models import NASAReq, NASAResp
 from app.core.jd import local_to_utc_iso
 from app.core.nasa_ephemeris import (
     get_planets_ecliptic,
-    from app.core.ayanamsa_exact import get_ayanamsa_deg
+    from app.core.ayanamsa_exact import get_ayanamsa_deg,
     mean_lunar_node_tropical_deg,
 )
 
