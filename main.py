@@ -37,9 +37,9 @@ from app.core.models import NASAReq, NASAResp
 from app.core.jd import local_to_utc_iso
 from app.core.nasa_ephemeris import (
     get_planets_ecliptic,
-    from app.core.ayanamsa_exact import get_ayanamsa_deg,
     mean_lunar_node_tropical_deg,
 )
+from app.core.ayanamsa_exact import get_ayanamsa_deg
 
 from app.core.rahu_ketu import calc_rahu_ketu
 # keep your original import (used in cusps + optional legacy)
@@ -157,10 +157,9 @@ def normalize_ayanamsa_name(v: Optional[str]) -> str:
     return "KP"
 
 def pick_ayanamsa_deg(jd_ut: float, ayanamsa_name: str) -> float:
-    lahiri = float(get_ayanamsa_deg(jd_ut, "LAHIRI"))
-    if ayanamsa_name == "KP":
-        return lahiri - 0.1015
-    return lahiri
+    if ayanamsa_name == "LAHIRI":
+        return float(get_ayanamsa_deg(jd_ut, "LAHIRI"))
+    return float(get_ayanamsa_deg(jd_ut, "KP"))  # default
 
 def _iso_to_dt(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
