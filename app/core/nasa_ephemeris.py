@@ -99,80 +99,54 @@ def mean_lunar_node_tropical_deg(jd_ut: float) -> float:
 # ✅ Planet positions tropical (geocentric) with speed
 # ---------------------------------------------------------
 def get_planets_ecliptic(datetime_utc_iso: str, lat: float, lng: float):
-    """
-    Returns geocentric apparent ecliptic longitude/latitude for planets
-    and approximate speed_lon in deg/day.
-
-    Input datetime_utc_iso examples:
-      "2026-01-19T03:30:00Z"
-      "2026-01-19T03:30:00"
-    """
     _ensure_loaded()
 
-    s = (datetime_utc_iso or "").strip()
-    if s.endswith("Z"):
-        s = s[:-1]
+    if datetime_utc_iso.endswith("Z"):
+        datetime_utc_iso = datetime_utc_iso[:-1]
+    dt = datetime.fromisoformat(datetime_utc_iso)
 
-    # parse
-    dt = datetime.fromisoformat(s)
-    # force UTC if naive
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    else:
-        dt = dt.astimezone(timezone.utc)
-
-    # Skyfield time
-    t = _TS.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
-
-    # ✅ speed calc with timedelta (no overflow)
+    # ✅ build proper +/- 1 minute timestamps (no minute=-1 bug)
     dt_plus = dt + timedelta(minutes=1)
     dt_minus = dt - timedelta(minutes=1)
+
+    t = _TS.utc(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
     t_plus = _TS.utc(dt_plus.year, dt_plus.month, dt_plus.day, dt_plus.hour, dt_plus.minute, dt_plus.second)
     t_minus = _TS.utc(dt_minus.year, dt_minus.month, dt_minus.day, dt_minus.hour, dt_minus.minute, dt_minus.second)
 
     earth = _EPH["earth"]
-    observer = earth  # geocentric
+    observer = earth  # ✅ geocentric confirm
 
     results = []
 
     for disp, key in PLANETS:
         body = _EPH[key]
-
-        # apparent position (includes light-time + aberration)
         astrometric = observer.at(t).observe(body).apparent()
 
-        # ecliptic coords
         ecl = astrometric.frame_latlon(ecliptic_frame)
         lon = _wrap360(ecl[1].degrees)
         lat_e = float(ecl[0].degrees)
         dist = float(astrometric.distance().au)
 
-        # speed approximation (deg/day)
+        # speed approx (deg/day)
         ecl_p = observer.at(t_plus).observe(body).apparent().frame_latlon(ecliptic_frame)
         ecl_m = observer.at(t_minus).observe(body).apparent().frame_latlon(ecliptic_frame)
         lon_p = _wrap360(ecl_p[1].degrees)
         lon_m = _wrap360(ecl_m[1].degrees)
 
         d = lon_p - lon_m
-        if d > 180:
-            d -= 360
-        if d < -180:
-            d += 360
+        if d > 180: d -= 360
+        if d < -180: d += 360
 
-        # over 2 minutes => scale to day (1440 minutes)
-        speed_lon = float((d / 2.0) * 1440.0)
+        # (difference over 2 minutes) * 720 minutes/day
+        speed_lon = float((d / 2.0) * 720.0)
 
-        results.append(
-            {
-                "name": disp,
-                "lon": lon,
-                "lat": lat_e,
-                "dist_au": dist,
-                "speed_lon": speed_lon,
-            }
-        )
+        results.append({
+            "name": disp,
+            "lon": lon,
+            "lat": lat_e,
+            "dist_au": dist,
+            "speed_lon": speed_lon,
+        })
 
-    # Use TT JD for internal stability; UT1 requires IERS tables (can drift if not loaded)
-    # For astrology pipelines, JD(TT) is fine as a continuous time tag.
-    jd_tt = float(t.tt)
-    return jd_tt, results
+    jd_ut = float(t.ut1)  # keep as is for now
+    return jd_ut, results
