@@ -14,6 +14,8 @@ import hashlib
 import time
 import os
 import json
+import traceback
+
 
 # (optional) rashiphal module (only if you created it)
 try:
@@ -407,6 +409,41 @@ def nasa_positions(req: NASAReq):
     out = {"jd_ut": jd_ut, "utc_iso": utc_iso, "planets": enriched}
     _cache_set(f"nasa:{key}", out)
     return out
+@app.post("/api/astro/home")
+def astro_home(req: HomeReq):
+    try:
+        # ---- existing code 그대로 ----
+        ayan_name = normalize_ayanamsa_name(req.ayanamsa)
+
+        base_key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
+        key = (
+            base_key
+            + f"|D{int(_safe_bool(req.includeDasha, False))}"
+            + f"|OP{int(_safe_bool(req.outerPlanets, False))}"
+            + f"|NM{int(_safe_bool(req.nodeMode, True))}"
+            + f"|H{int(_safe_bool(req.horaryOn, False))}"
+            + f"|HN{int(req.horaryNumber or 1)}"
+        )
+
+        cached = _cache_get(f"home:{key}")
+        if cached:
+            return cached
+
+        utc_iso = local_to_utc_iso(req.datetimeLocal, req.tz)
+        jd_ut, planets = get_planets_ecliptic(utc_iso, req.lat, req.lon)
+        ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
+
+        # ...rest of your existing astro_home code unchanged...
+
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "HOME_API_FAILED",
+                "message": str(e),
+                "trace": traceback.format_exc()[-3500:],  # last part is enough
+            },
+        )
 
 
 # -------------------------------------------------
