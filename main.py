@@ -53,8 +53,6 @@ from app.core.vimshottari_tree import build_mahadasha_list_120y_9items, build_le
 
 from app.core.panchangam_calc import compute_panchangam
 
-
-
 # -------------------------------------------------
 # App
 # -------------------------------------------------
@@ -82,8 +80,16 @@ def _startup_warm():
         print(f"[STARTUP] warm fail: {e}", flush=True)
 
 # -------------------------------------------------
-# Health / Debug
+# ✅ Health / Debug (Render friendly)
 # -------------------------------------------------
+@app.get("/")
+def root():
+    return {"ok": True, "service": "kp-nasa-backend"}
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
 @app.get("/health")
 def health():
     return {"ok": True, "service": "kp-nasa-backend"}
