@@ -9,3 +9,15 @@ venv/
 # OS / editor junk
 .DS_Store
 .vscode/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv/
+venv/
+dist/
+build/
+# Project sensitive / local-only
+app/security.py
+git/
