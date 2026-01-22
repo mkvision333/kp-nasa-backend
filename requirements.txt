@@ -34,3 +34,4 @@ pyswisseph
 jplephem==2.23
 sgp4==2.25
 skyfield==1.49
+skyfield
