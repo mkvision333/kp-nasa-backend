@@ -1,11 +1,11 @@
-# app/core/panchangam_calc.py
+# app/core/panchangam_calc.py ✅ FULL REPLACE
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Tuple, Callable
 from zoneinfo import ZoneInfo
 import math
-import time  # ✅ ADD (cache కోసం)
+import time
 
 from skyfield.api import load, wgs84
 from skyfield import almanac
@@ -55,12 +55,11 @@ def _sf_loaded():
     return _TS, _EPH
 
 # ----------------- Panchangam result cache -----------------
-# ✅ same local-date + tz + lat/lon + ayan_deg -> reuse result
 _PANCH_CACHE: Dict[str, Dict[str, Any]] = {}
 _PANCH_TTL_SEC = 6 * 60 * 60  # 6 hours
 
 def _panch_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayan_deg: float) -> str:
-    # cache per "local date" (panchangam is sunrise day-based)
+    # cache per local date
     try:
         d = datetime.fromisoformat(datetimeLocal).date()
     except Exception:
@@ -79,6 +78,7 @@ def _panch_cache_get(key: str):
 def _panch_cache_set(key: str, data: Dict[str, Any]):
     _PANCH_CACHE[key] = {"_ts": time.time(), "data": data}
 
+# ----------------- Helpers -----------------
 def wrap360(x: float) -> float:
     x = float(x) % 360.0
     return x if x >= 0 else x + 360.0
@@ -89,10 +89,34 @@ def fmt_local(dt_local: datetime) -> str:
 def fmt_hm(dt_local: datetime) -> str:
     return dt_local.strftime("%H:%M")
 
-def _sunrise_next_sunrise_utc(lat: float, lon: float, day_local_date: datetime, tz: str) -> Tuple[datetime, datetime]:
+def _fmt_span(zone: ZoneInfo, a_utc: datetime, b_utc: datetime) -> Dict[str, str]:
+    a = a_utc.astimezone(zone)
+    b = b_utc.astimezone(zone)
+    return {"start": fmt_hm(a), "end": fmt_hm(b)}
+
+# indices are 1..8 segments in daytime
+_RAHU_IDX = {"Sunday": 8, "Monday": 2, "Tuesday": 7, "Wednesday": 5, "Thursday": 6, "Friday": 4, "Saturday": 3}
+_YAMA_IDX = {"Sunday": 6, "Monday": 5, "Tuesday": 4, "Wednesday": 3, "Thursday": 2, "Friday": 1, "Saturday": 7}
+_GULI_IDX = {"Sunday": 7, "Monday": 6, "Tuesday": 5, "Wednesday": 4, "Thursday": 3, "Friday": 2, "Saturday": 1}
+
+def _kala_segment(sunrise_utc: datetime, sunset_utc: datetime, seg_index_1to8: int) -> Tuple[datetime, datetime]:
+    day_len = (sunset_utc - sunrise_utc)
+    part = day_len / 8
+    a = sunrise_utc + part * (seg_index_1to8 - 1)
+    b = a + part
+    return a, b
+
+def _abhijit(sunrise_utc: datetime, sunset_utc: datetime) -> Tuple[datetime, datetime]:
+    # Practical Abhijit: around mid-day; use 1/15 of day length
+    mid = sunrise_utc + (sunset_utc - sunrise_utc) / 2
+    span = (sunset_utc - sunrise_utc) / 15
+    return mid - span / 2, mid + span / 2
+
+def _sunrise_sunset_nextsunrise_utc(
+    lat: float, lon: float, day_local_date: datetime, tz: str
+) -> Tuple[datetime, datetime, datetime]:
     """
-    Compute sunrise for local-date-day and next day's sunrise (UTC datetimes).
-    ✅ Correct: almanac.sunrise_sunset(eph, topos) where topos = wgs84.latlon(...)
+    Returns (sunrise_utc, sunset_utc, next_sunrise_utc) for the given local date.
     """
     zone = ZoneInfo(tz)
 
@@ -102,7 +126,6 @@ def _sunrise_next_sunrise_utc(lat: float, lon: float, day_local_date: datetime, 
 
     ts, eph = _sf_loaded()
 
-    # ✅ IMPORTANT FIX: pass Topos (NOT earth+topos)
     topos = wgs84.latlon(latitude_degrees=float(lat), longitude_degrees=float(lon))
     f = almanac.sunrise_sunset(eph, topos)
 
@@ -111,30 +134,51 @@ def _sunrise_next_sunrise_utc(lat: float, lon: float, day_local_date: datetime, 
 
     times, events = almanac.find_discrete(t0, t1, f)
 
-    sunrises = []
+    sunrise_list = []
+    sunset_list = []
     for ti, ev in zip(times, events):
+        dt = ti.utc_datetime().replace(tzinfo=timezone.utc)
         if bool(ev) is True:
-            sunrises.append(ti.utc_datetime().replace(tzinfo=timezone.utc))
+            sunrise_list.append(dt)
+        else:
+            sunset_list.append(dt)
 
-    if len(sunrises) < 2:
-        approx0 = local_midnight.replace(hour=6).astimezone(timezone.utc)
-        approx1 = (local_midnight + timedelta(days=1)).replace(hour=6).astimezone(timezone.utc)
-        return approx0, approx1
+    # fallback
+    if len(sunrise_list) < 2 or len(sunset_list) < 1:
+        approx_sunrise = local_midnight.replace(hour=6).astimezone(timezone.utc)
+        approx_sunset = local_midnight.replace(hour=18).astimezone(timezone.utc)
+        approx_next = (local_midnight + timedelta(days=1)).replace(hour=6).astimezone(timezone.utc)
+        return approx_sunrise, approx_sunset, approx_next
 
-    sun_today = None
-    sun_next = None
-    for i in range(len(sunrises) - 1):
-        a_loc = sunrises[i].astimezone(zone)
-        b_loc = sunrises[i + 1].astimezone(zone)
-        if a_loc.date() == local_midnight.date():
-            sun_today = sunrises[i]
-            sun_next = sunrises[i + 1]
+    target_date = local_midnight.date()
+
+    sunrise_today = None
+    next_sunrise = None
+    for i in range(len(sunrise_list) - 1):
+        a_loc = sunrise_list[i].astimezone(zone)
+        if a_loc.date() == target_date:
+            sunrise_today = sunrise_list[i]
+            next_sunrise = sunrise_list[i + 1]
             break
+    if sunrise_today is None:
+        sunrise_today, next_sunrise = sunrise_list[0], sunrise_list[1]
 
-    if sun_today is None:
-        sun_today, sun_next = sunrises[0], sunrises[1]
+    sunset_today = None
+    for s in sunset_list:
+        s_loc = s.astimezone(zone)
+        if s_loc.date() == target_date:
+            sunset_today = s
+            break
+    if sunset_today is None:
+        # first sunset after sunrise
+        for s in sunset_list:
+            if s > sunrise_today:
+                sunset_today = s
+                break
+    if sunset_today is None:
+        sunset_today = sunrise_today + timedelta(hours=12)
 
-    return sun_today, sun_next
+    return sunrise_today, sunset_today, next_sunrise
 
 def _sun_moon_sid_at(dt_utc: datetime, lat: float, lon: float, ayan_deg: float) -> Tuple[float, float]:
     """
@@ -153,6 +197,7 @@ def _sun_moon_sid_at(dt_utc: datetime, lat: float, lon: float, ayan_deg: float) 
             moon_t = float(p.get("lon", 0.0))
 
     if sun_t is None or moon_t is None:
+        # fallback
         sun_t = float(planets[0]["lon"])
         moon_t = float(planets[1]["lon"])
 
@@ -168,7 +213,13 @@ def _unwrap_near(x: float, x0: float) -> float:
         return x - 360.0
     return x
 
-def _bin_search_time(fn: Callable[[datetime], float], target: float, t0: datetime, t1: datetime, iters: int = 44) -> datetime:
+def _bin_search_time(
+    fn: Callable[[datetime], float],
+    target: float,
+    t0: datetime,
+    t1: datetime,
+    iters: int = 44,
+) -> datetime:
     a = t0
     b = t1
     fa0 = fn(a)
@@ -185,8 +236,8 @@ def _bin_search_time(fn: Callable[[datetime], float], target: float, t0: datetim
             b = mid
     return b
 
+# ----------------- Main -----------------
 def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan_deg: float) -> Dict[str, Any]:
-    # ✅ CACHE HIT (top of function)
     key = _panch_key(datetimeLocal, tz, float(lat), float(lon), float(ayan_deg))
     hit = _panch_cache_get(key)
     if hit:
@@ -194,14 +245,21 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
 
     zone = ZoneInfo(tz)
 
-    # datetimeLocal is like "2025-12-28T08:30:00" (local naive)
+    # datetimeLocal must be local-naive like "2026-01-26T12:00:00"
     dt_local = datetime.fromisoformat(datetimeLocal).replace(tzinfo=zone)
 
-    sunrise_utc, next_sunrise_utc = _sunrise_next_sunrise_utc(lat, lon, dt_local, tz)
+    sunrise_utc, sunset_utc, next_sunrise_utc = _sunrise_sunset_nextsunrise_utc(lat, lon, dt_local, tz)
     sunrise_local = sunrise_utc.astimezone(zone)
+    sunset_local = sunset_utc.astimezone(zone)
     next_sunrise_local = next_sunrise_utc.astimezone(zone)
 
     vaara = VAARA_EN[sunrise_local.weekday()]
+
+    # kaala blocks
+    rahu_a, rahu_b = _kala_segment(sunrise_utc, sunset_utc, _RAHU_IDX.get(vaara, 2))
+    yama_a, yama_b = _kala_segment(sunrise_utc, sunset_utc, _YAMA_IDX.get(vaara, 5))
+    guli_a, guli_b = _kala_segment(sunrise_utc, sunset_utc, _GULI_IDX.get(vaara, 6))
+    abhi_a, abhi_b = _abhijit(sunrise_utc, sunset_utc)
 
     sun0, moon0 = _sun_moon_sid_at(sunrise_utc, lat, lon, ayan_deg)
 
@@ -228,6 +286,8 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
     tithi_target = (math.floor(d0 / TITHI_SPAN) + 1) * TITHI_SPAN
     tithi_end_utc = _bin_search_time(delta_unwrapped, tithi_target, sunrise_utc, next_sunrise_utc)
     tithi_end_local = tithi_end_utc.astimezone(zone)
+
+    paksha = "Shukla" if 1 <= tithi_idx <= 15 else "Krishna"
 
     # ---- NAKSHATRA + PADA ----
     nak_idx = int(math.floor(moon0 / STAR_SPAN)) + 1
@@ -258,11 +318,19 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
     kar_end_utc = _bin_search_time(delta_unwrapped, kar_target, sunrise_utc, next_sunrise_utc)
     kar_end_local = kar_end_utc.astimezone(zone)
 
-    out = {
+    out: Dict[str, Any] = {
         "sunrise_local": fmt_local(sunrise_local),
+        "sunset_local": fmt_local(sunset_local),
         "next_sunrise_local": fmt_local(next_sunrise_local),
         "vaara": vaara,
-        # ✅ app లో time చూపించడానికి both end_local and end_hms already ఉన్నాయి
+
+        "paksha": paksha,
+
+        "rahu_kalam": _fmt_span(zone, rahu_a, rahu_b),
+        "yamaganda": _fmt_span(zone, yama_a, yama_b),
+        "gulika": _fmt_span(zone, guli_a, guli_b),
+        "abhijit": _fmt_span(zone, abhi_a, abhi_b),
+
         "tithi": {"name": tithi_name, "end_local": fmt_local(tithi_end_local), "end_hms": fmt_hm(tithi_end_local)},
         "nakshatra": {
             "name": nak_name,
@@ -274,6 +342,5 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         "karana": {"name": kar_name, "end_local": fmt_local(kar_end_local), "end_hms": fmt_hm(kar_end_local)},
     }
 
-    # ✅ CACHE SET (end of function)
     _panch_cache_set(key, out)
     return out
