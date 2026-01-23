@@ -61,7 +61,7 @@ SAMVATSARA_60_TE = [
 
 # Rahu/Yama/Gulika indices (1..8 segments) - standard
 _RAHU_IDX = {"Sunday": 8, "Monday": 2, "Tuesday": 7, "Wednesday": 5, "Thursday": 6, "Friday": 4, "Saturday": 3}
-_YAMA_IDX = {"Sunday": 6, "Monday": 5, "Tuesday": 4, "Wednesday": 3, "Thursday": 2, "Friday": 1, "Saturday": 7}
+_YAMA_IDX = {"Sunday": 5, "Monday": 4, "Tuesday": 3, "Wednesday": 2, "Thursday": 1, "Friday": 7, "Saturday": 6}
 _GULI_IDX = {"Sunday": 7, "Monday": 6, "Tuesday": 5, "Wednesday": 4, "Thursday": 3, "Friday": 2, "Saturday": 1}
 
 # Durmuhurta muhurtas (sunrise->sunset divided into 15 muhurtas)
@@ -438,7 +438,7 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
     sunset_local = sunset_utc.astimezone(zone)
     next_sunrise_local = next_sunrise_utc.astimezone(zone)
 
-    vaara = VAARA_EN[sunrise_local.weekday()]
+    vaara = VAARA_EN[local_d.weekday()]
 
     # Kala blocks
     rahu_a, rahu_b = _kala_segment(sunrise_utc, sunset_utc, _RAHU_IDX.get(vaara, 2))
