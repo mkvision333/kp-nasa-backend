@@ -1,30 +1,25 @@
 fastapi==0.124.4
 uvicorn==0.38.0
-starlette==0.50.0
+
+numpy==2.3.5
+pytz==2025.2
+python-dateutil==2.9.0.post0
+
+requests==2.32.5
+urllib3==2.6.2
+certifi==2025.11.12
+charset-normalizer==3.4.4
+idna==3.11
 
 pydantic==2.12.5
 pydantic_core==2.41.5
 typing_extensions==4.15.0
-annotated-types==0.7.0
-typing-inspection==0.4.2
 
-requests==2.32.5
-python-dateutil==2.9.0.post0
-pytz==2025.2
-
-numpy==2.3.5
 pyswisseph==2.10.3.2
-timezonefinder==8.2.0
 
-# If you STILL use skyfield anywhere else (not needed for my fast panchangam):
+# Skyfield (NASA ephemeris)
 skyfield==1.49
 jplephem==2.23
 sgp4==2.25
 
-certifi
-charset-normalizer
-idna
-urllib3
-anyio==4.12.0
-h11==0.16.0
-click==8.3.1
+timezonefinder==8.2.0
