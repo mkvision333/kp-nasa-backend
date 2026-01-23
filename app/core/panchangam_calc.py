@@ -42,7 +42,6 @@ YOGA_NAMES = [
 
 SPECIAL_LAST = ["Shakuni", "Chatushpada", "Naga"]
 
-# 60 Samvatsara (English)
 SAMVATSARA_60 = [
     "Prabhava","Vibhava","Shukla","Pramoda","Prajapati","Angirasa","Shrimukha","Bhava","Yuva","Dhata",
     "Ishvara","Bahudhanya","Pramathi","Vikrama","Vrisha","Chitrabhanu","Svabhanu","Tarana","Parthiva","Vyaya",
@@ -52,7 +51,6 @@ SAMVATSARA_60 = [
     "Pingala","Kalayukti","Siddharthi","Raudra","Durmati","Dundubhi","Rudhirodgari","Raktakshi","Krodhana","Akshaya"
 ]
 
-# Telugu (optional)
 SAMVATSARA_60_TE = [
     "ప్రభవ","విభవ","శుక్ల","ప్రమోద","ప్రజాపతి","ఆంగీరస","శ్రీముఖ","భవ","యువ","ధాత",
     "ఈశ్వర","బహుధాన్య","ప్రమాథి","విక్రమ","వృష","చిత్రభాను","స్వభాను","తారణ","పార్థివ","వ్యయ",
@@ -67,7 +65,7 @@ _RAHU_IDX = {"Sunday": 8, "Monday": 2, "Tuesday": 7, "Wednesday": 5, "Thursday":
 _YAMA_IDX = {"Sunday": 6, "Monday": 5, "Tuesday": 4, "Wednesday": 3, "Thursday": 2, "Friday": 1, "Saturday": 7}
 _GULI_IDX = {"Sunday": 7, "Monday": 6, "Tuesday": 5, "Wednesday": 4, "Thursday": 3, "Friday": 2, "Saturday": 1}
 
-# Durmuhurta (Drik-style variable muhurtas)
+# Durmuhurta muhurtas (day divided into 15 muhurtas)
 _DUR_MUHURTA_MUHURTA_IDX: Dict[str, List[int]] = {
     "Sunday": [4],
     "Monday": [8],
@@ -92,6 +90,25 @@ LUNAR_MONTH_BY_SUN_RASHI = {
     8:  "Pausha",       # Sagittarius
     9:  "Magha",        # Capricorn
     10: "Phalguna",     # Aquarius
+}
+
+# ✅ Varjya (Nakshatra Thyajyam) ghati ranges for 27 nakshatras (each nakshatra = 60 ghatis)
+# Format: (startGhati, endGhati)
+_VARJYA_GHATI: List[Tuple[int, int]] = [
+    (51,54), (25,28), (31,34), (41,44), (15,18), (22,25), (31,34), (21,24), (33,36),
+    (31,34), (21,24), (19,22), (22,25), (21,24), (15,18), (15,18), (11,14), (15,18),
+    (57,60), (25,28), (21,24), (11,14), (11,14), (19,22), (17,20), (25,28), (31,34),
+]
+
+# ✅ Day Choghadiya table (8 parts sunrise->sunset)
+DAY_CHOGH: Dict[str, List[str]] = {
+    "Sunday":    ["Udveg","Char","Labh","Amrit","Kaal","Shubh","Rog","Udveg"],
+    "Monday":    ["Amrit","Kaal","Shubh","Rog","Udveg","Char","Labh","Amrit"],
+    "Tuesday":   ["Rog","Udveg","Char","Labh","Amrit","Kaal","Shubh","Rog"],
+    "Wednesday": ["Labh","Amrit","Kaal","Shubh","Rog","Udveg","Char","Labh"],
+    "Thursday":  ["Shubh","Rog","Udveg","Char","Labh","Amrit","Kaal","Shubh"],
+    "Friday":    ["Char","Labh","Amrit","Kaal","Shubh","Rog","Udveg","Char"],
+    "Saturday":  ["Kaal","Shubh","Rog","Udveg","Char","Labh","Amrit","Kaal"],
 }
 
 # ---------------------------
@@ -172,6 +189,7 @@ def _durmuhurta_spans(sunrise_utc: datetime, sunset_utc: datetime, vaara: str) -
 
 # ---------------------------
 # ✅ NOAA-style sunrise/sunset (pure python, no deps)
+# FIXED: longitude sign handling to prevent date mismatch
 # ---------------------------
 def _julian_day(dt_utc: datetime) -> float:
     y = dt_utc.year
@@ -219,7 +237,10 @@ def _sunrise_sunset_utc_for_local_date(local_d: date, tz: str, lat: float, lon: 
     cos_ha = max(-1.0, min(1.0, cos_ha))
     ha = math.degrees(math.acos(cos_ha))
 
-    solar_noon_min = (720 - 4 * lon - eq_time)
+    # ✅ FIX: NOAA formula in this form expects West-positive longitude.
+    lon_west = -float(lon)
+
+    solar_noon_min = (720 - 4 * lon_west - eq_time)
     sunrise_min = solar_noon_min - 4 * ha
     sunset_min = solar_noon_min + 4 * ha
 
@@ -288,7 +309,6 @@ def _solve_end_time_fast(
     if est < t0: est = t0
     if est > t1: est = t1
 
-    # refine once
     vE = value_fn(est)
     tR = min(est + timedelta(hours=2), t1)
     vR = value_fn(tR)
@@ -297,6 +317,39 @@ def _solve_end_time_fast(
         return est
 
     est2 = est + timedelta(seconds=float((target - vE) / rate2))
+    if est2 < t0: est2 = t0
+    if est2 > t1: est2 = t1
+    return est2
+
+def _solve_start_time_fast(
+    value_fn: Callable[[datetime], float],
+    v_at_t1: float,
+    target: float,
+    t0: datetime,
+    t1: datetime,
+    sample_dt: timedelta = timedelta(hours=6),
+) -> datetime:
+    """
+    Solve backwards for value_fn(t)=target within [t0,t1], using 1-2 samples.
+    """
+    tS = max(t1 - sample_dt, t0)
+    vS = value_fn(tS)
+    rate = (v_at_t1 - vS) / max(1.0, (t1 - tS).total_seconds())
+    if abs(rate) < 1e-10:
+        return t0
+
+    est = t1 - timedelta(seconds=float((v_at_t1 - target) / rate))
+    if est < t0: est = t0
+    if est > t1: est = t1
+
+    vE = value_fn(est)
+    tR = max(est - timedelta(hours=2), t0)
+    vR = value_fn(tR)
+    rate2 = (vE - vR) / max(1.0, (est - tR).total_seconds())
+    if abs(rate2) < 1e-10:
+        return est
+
+    est2 = est - timedelta(seconds=float((vE - target) / rate2))
     if est2 < t0: est2 = t0
     if est2 > t1: est2 = t1
     return est2
@@ -330,10 +383,8 @@ def _approx_vikrama_year(dt_local: datetime) -> int:
         return y + 57
     return y + 56
 
-# ✅ Samvatsara FIX:
-# Your app shows "Vishvavasu" now; previous formula gave "Kilaka".
-# We calibrate with offset so 2026-01 matches Vishvavasu.
-_SAMVATSARA_VIKRAMA_OFFSET = -3  # ✅ calibrated: 2082 -> Vishvavasu (not Kilaka)
+# ✅ Samvatsara calibrated (keep your existing behavior)
+_SAMVATSARA_VIKRAMA_OFFSET = -3
 
 def _samvatsara_from_vikrama(vikrama_year: int) -> Tuple[str, str]:
     idx = ((int(vikrama_year) - 1) + _SAMVATSARA_VIKRAMA_OFFSET) % 60
@@ -359,7 +410,7 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
     sunset_local = sunset_utc.astimezone(zone)
     next_sunrise_local = next_sunrise_utc.astimezone(zone)
 
-    vaara = VAARA_EN[sunrise_local.weekday()]
+    vaara = VAARA_EN[sunrise_local.weekday()]  # Monday..Sunday
 
     # Kala blocks
     rahu_a, rahu_b = _kala_segment(sunrise_utc, sunset_utc, _RAHU_IDX.get(vaara, 2))
@@ -395,8 +446,8 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
     tithi_end_local = tithi_end_utc.astimezone(zone)
 
     # ---- Nakshatra ----
-    nak_idx = int(math.floor(moon0 / STAR_SPAN)) + 1
-    nak_name = NAKSHATRA_NAMES[(nak_idx - 1) % 27]
+    nak_idx_1 = int(math.floor(moon0 / STAR_SPAN)) + 1
+    nak_name = NAKSHATRA_NAMES[(nak_idx_1 - 1) % 27]
     nak_target = (math.floor(moon0 / STAR_SPAN) + 1) * STAR_SPAN
     nak_end_utc = _solve_end_time_fast(moon_unwrapped, moon0, nak_target, sunrise_utc, next_sunrise_utc)
     nak_end_local = nak_end_utc.astimezone(zone)
@@ -449,42 +500,43 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
     durm_spans = _durmuhurta_spans(sunrise_utc, sunset_utc, vaara)
     durmuhurtha_list = [_fmt_span(zone, a, b) for (a, b) in durm_spans]
 
-    # ---- Varjya / Amrita / Shubha (STABLE: based on remaining nak time in day) ----
-    day_end = min(sunset_utc, nak_end_utc)
-    remain = (day_end - sunrise_utc)
-    def _clamp(a: datetime, b: datetime) -> Optional[Tuple[datetime, datetime]]:
-        aa = max(a, sunrise_utc)
-        bb = min(b, sunset_utc)
-        if bb <= aa:
-            return None
-        return aa, bb
+    # ---- Varjya (Nakshatra Thyajyam) ----
+    # Estimate nakshatra start (backwards) so varjya becomes correct and still fast
+    nak_i0 = (nak_idx_1 - 1) % 27
+    nak_start_boundary = math.floor(moon0 / STAR_SPAN) * STAR_SPAN  # boundary at nak start
+
+    t0_back = sunrise_utc - timedelta(days=1)
+    nak_start_utc = _solve_start_time_fast(moon_unwrapped, moon0, nak_start_boundary, t0_back, sunrise_utc)
+
+    nak_dur = (nak_end_utc - nak_start_utc)
+    varjya_sp: List[Tuple[datetime, datetime]] = []
+    if nak_dur.total_seconds() > 0:
+        g0, g1 = _VARJYA_GHATI[nak_i0]
+        a = nak_start_utc + nak_dur * (g0 / 60.0)
+        b = nak_start_utc + nak_dur * (g1 / 60.0)
+        if b > a:
+            varjya_sp.append((a, b))
+
+    varjya_list = [_fmt_span(zone, a, b) for (a, b) in varjya_sp]
+
+    # ---- Amrita/Shubha from Day Choghadiya (8 parts sunrise->sunset) ----
+    seq = DAY_CHOGH.get(vaara, DAY_CHOGH["Monday"])
+    day_len = (sunset_utc - sunrise_utc)
+    part = day_len / 8
 
     amrita_sp: List[Tuple[datetime, datetime]] = []
     shubha_sp: List[Tuple[datetime, datetime]] = []
-    varjya_sp: List[Tuple[datetime, datetime]] = []
-
-    if remain.total_seconds() > 0:
-        def seg(p0: float, p1: float) -> Optional[Tuple[datetime, datetime]]:
-            a = sunrise_utc + remain * p0
-            b = sunrise_utc + remain * p1
-            return _clamp(a, b)
-
-        # ✅ ensure "at least one" falls in daytime
-        for p0, p1 in [(0.08, 0.22)]:  # Amrita
-            c = seg(p0, p1)
-            if c: amrita_sp.append(c)
-
-        for p0, p1 in [(0.30, 0.40), (0.70, 0.82)]:  # Shubha (two windows)
-            c = seg(p0, p1)
-            if c: shubha_sp.append(c)
-
-        for p0, p1 in [(0.55, 0.65)]:  # Varjya
-            c = seg(p0, p1)
-            if c: varjya_sp.append(c)
+    for i in range(8):
+        nm = seq[i]
+        a = sunrise_utc + part * i
+        b = a + part
+        if nm == "Amrit":
+            amrita_sp.append((a, b))
+        if nm == "Shubh":
+            shubha_sp.append((a, b))
 
     amrita_ghadiya = [_fmt_span(zone, a, b) for (a, b) in amrita_sp]
     shubha_ghadiya = [_fmt_span(zone, a, b) for (a, b) in shubha_sp]
-    varjya_list = [_fmt_span(zone, a, b) for (a, b) in varjya_sp]
 
     out: Dict[str, Any] = {
         "sunrise_local": fmt_local(sunrise_local),
@@ -510,6 +562,7 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         "varjya_kaal": varjya_list,
 
         "abhijit": _fmt_span(zone, abhi_a, abhi_b),
+
         "amrita_ghadiya": amrita_ghadiya,
         "shubha_ghadiya": shubha_ghadiya,
 
@@ -518,7 +571,7 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         "yoga": {"name": yoga_name, "end_local": fmt_local(yoga_end_local), "end_hms": fmt_hm(yoga_end_local)},
         "karana": {"name": kar_name, "end_local": fmt_local(kar_end_local), "end_hms": fmt_hm(kar_end_local)},
 
-        "note": "Fast panchangam: NOAA sunrise/sunset + NASA lon; no skyfield/astral downloads."
+        "note": "Fast panchangam: NOAA sunrise/sunset (lon fix) + NASA lon; cache+few calls. Varjya via nakshatra ghatis; Amrita/Shubha via choghadiya."
     }
 
     _cache_set(key, out)
