@@ -937,73 +937,52 @@ def dasha_antara(req: DashaLevelReq):
         raise HTTPException(status_code=400, detail=f"antara error: {e}")
 
 
+from fastapi import HTTPException
+
 @app.post("/api/dasha/sukshma")
 def dasha_sukshma(req: DashaLevelReq):
-    cached = _cache_get(f"su2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.start}:{req.end}")
-    if cached:
-        return cached
+    try:
+        cached = _cache_get(f"su:{req.key}:{req.antaraLord}:{req.start}:{req.end}")
+        if cached:
+            return cached
 
-    maha = str(req.mahaLord or "").strip()
-    bh_lord = str(req.bhuktiLord or "").strip()
-    an_lord = str(req.antaraLord or "").strip()
-    if not maha:
-        raise ValueError("mahaLord required")
-    if not bh_lord:
-        raise ValueError("bhuktiLord required")
-    if not an_lord:
-        raise ValueError("antaraLord required")
+        start = _iso_to_dt(req.start)
+        end = _iso_to_dt(req.end)
 
-    rem_years = _years_between_iso(req.start, req.end)
-    tree = build_vimshottari_tree(
-        start_utc=_parse_iso_utc(req.start),
-        maha_lord=maha,
-        maha_balance_years=rem_years,
-        max_levels=4,
-    )
-    bh_list = (tree[0] or {}).get("bhukti", []) if tree else []
-    bh_node = next((x for x in bh_list if str(x.get("lord")) == bh_lord), None)
-    an_list = (bh_node or {}).get("antara", [])
-    an_node = next((x for x in an_list if str(x.get("lord")) == an_lord), None)
+        an = str(req.antaraLord or "").strip()
+        if not an:
+            raise ValueError("antaraLord required")
 
-    su = (an_node or {}).get("sukshma", [])
-    out = {"sukshma": su}
-    _cache_set(f"su2:{req.key}:{maha}:{bh_lord}:{an_lord}:{req.start}:{req.end}", out)
-    return out
+        su = build_level_list("sukshma", start, end, an)
+        out = {"sukshma": su}
+        _cache_set(f"su:{req.key}:{an}:{req.start}:{req.end}", out)
+        return out
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"sukshma error: {e}")
+
+
+from fastapi import HTTPException
 
 @app.post("/api/dasha/prana")
 def dasha_prana(req: DashaLevelReq):
-    cached = _cache_get(f"pr2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.sukshmaLord}:{req.start}:{req.end}")
-    if cached:
-        return cached
+    try:
+        cached = _cache_get(f"pr:{req.key}:{req.sukshmaLord}:{req.start}:{req.end}")
+        if cached:
+            return cached
 
-    maha = str(req.mahaLord or "").strip()
-    bh_lord = str(req.bhuktiLord or "").strip()
-    an_lord = str(req.antaraLord or "").strip()
-    su_lord = str(req.sukshmaLord or "").strip()
-    if not maha:
-        raise ValueError("mahaLord required")
-    if not bh_lord:
-        raise ValueError("bhuktiLord required")
-    if not an_lord:
-        raise ValueError("antaraLord required")
-    if not su_lord:
-        raise ValueError("sukshmaLord required")
+        start = _iso_to_dt(req.start)
+        end = _iso_to_dt(req.end)
 
-    rem_years = _years_between_iso(req.start, req.end)
-    tree = build_vimshottari_tree(
-        start_utc=_parse_iso_utc(req.start),
-        maha_lord=maha,
-        maha_balance_years=rem_years,
-        max_levels=5,
-    )
-    bh_list = (tree[0] or {}).get("bhukti", []) if tree else []
-    bh_node = next((x for x in bh_list if str(x.get("lord")) == bh_lord), None)
-    an_list = (bh_node or {}).get("antara", [])
-    an_node = next((x for x in an_list if str(x.get("lord")) == an_lord), None)
-    su_list = (an_node or {}).get("sukshma", [])
-    su_node = next((x for x in su_list if str(x.get("lord")) == su_lord), None)
+        su = str(req.sukshmaLord or "").strip()
+        if not su:
+            raise ValueError("sukshmaLord required")
 
-    pr = (su_node or {}).get("prana", [])
-    out = {"prana": pr}
-    _cache_set(f"pr2:{req.key}:{maha}:{bh_lord}:{an_lord}:{su_lord}:{req.start}:{req.end}", out)
-    return out
+        pr = build_level_list("prana", start, end, su)
+        out = {"prana": pr}
+        _cache_set(f"pr:{req.key}:{su}:{req.start}:{req.end}", out)
+        return out
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"prana error: {e}")
+
