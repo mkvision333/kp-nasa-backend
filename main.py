@@ -912,36 +912,30 @@ def dasha_bhukti(req: DashaLevelReq):
     _cache_set(f"bh2:{req.key}:{maha}:{req.start}:{req.end}", out)
     return out
 
+from fastapi import HTTPException
+
 @app.post("/api/dasha/antara")
 def dasha_antara(req: DashaLevelReq):
-    cached = _cache_get(f"an2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.start}:{req.end}")
-    if cached:
-        return cached
+    try:
+        cached = _cache_get(f"an:{req.key}:{req.bhuktiLord}:{req.start}:{req.end}")
+        if cached:
+            return cached
 
-    maha = str(req.mahaLord or "").strip()
-    bh_lord = str(req.bhuktiLord or "").strip()
-    if not maha:
-        raise ValueError("mahaLord required")
-    if not bh_lord:
-        raise ValueError("bhuktiLord required")
+        start = _iso_to_dt(req.start)
+        end = _iso_to_dt(req.end)
 
-    rem_years = _years_between_iso(req.start, req.end)
-    tree = build_vimshottari_tree(
-        start_utc=_parse_iso_utc(req.start),
-        maha_lord=maha,
-        maha_balance_years=rem_years,
-        max_levels=3,
-    )
-    bh_list = (tree[0] or {}).get("bhukti", []) if tree else []
-    target = next((x for x in bh_list if str(x.get("lord")) == bh_lord and x.get("start") == req.start and x.get("end") == req.end), None)
-    if target is None:
-        # fallback: find by lord and containing window
-        target = next((x for x in bh_list if str(x.get("lord")) == bh_lord), None)
+        bh = str(req.bhuktiLord or "").strip()
+        if not bh:
+            raise ValueError("bhuktiLord required")
 
-    an = (target or {}).get("antara", [])
-    out = {"antara": an}
-    _cache_set(f"an2:{req.key}:{maha}:{bh_lord}:{req.start}:{req.end}", out)
-    return out
+        an = build_level_list("antara", start, end, bh)
+        out = {"antara": an}
+        _cache_set(f"an:{req.key}:{bh}:{req.start}:{req.end}", out)
+        return out
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"antara error: {e}")
+
 
 @app.post("/api/dasha/sukshma")
 def dasha_sukshma(req: DashaLevelReq):
