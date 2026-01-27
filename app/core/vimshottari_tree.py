@@ -1,7 +1,7 @@
 # app/core/vimshottari_tree.py
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 DASHA_YEARS: Dict[str, float] = {
     "Ketu": 7,
@@ -16,6 +16,21 @@ DASHA_YEARS: Dict[str, float] = {
 }
 
 ORDER: List[str] = ["Ketu", "Venus", "Sun", "Moon", "Mars", "Rahu", "Jupiter", "Saturn", "Mercury"]
+
+LEVEL_CHILD_KEY = {
+    "mahadasha": "bhukti",
+    "bhukti": "antara",
+    "antara": "sukshma",
+    "sukshma": "prana",
+}
+
+LEVEL_NEXT = {
+    "mahadasha": "bhukti",
+    "bhukti": "antara",
+    "antara": "sukshma",
+    "sukshma": "prana",
+    "prana": None,
+}
 
 
 def _iso(dt: datetime) -> str:
@@ -51,20 +66,14 @@ def _attach_children(node: Dict, key: str, children: List[Dict]) -> Dict:
 # ✅ NEW: FAST LAZY BUILD HELPERS (AstroSage-style)
 # ------------------------------------------------------------
 def _parse_iso_utc(s: str) -> datetime:
-    # expects Z
     return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
 
 
-def build_level_list(
-    level: str,
-    start_utc: datetime,
-    end_utc: datetime,
-    start_lord: str,
-) -> List[Dict]:
+def build_level_list(level: str, start_utc: datetime, end_utc: datetime, start_lord: str) -> List[Dict]:
     """
     ✅ Builds ONLY ONE LEVEL (9 items) within [start_utc, end_utc]
-    Formula: sub_days = parent_days * (lord_years / 120)
-    Sequence starts from start_lord and follows ORDER.
+    NOTE: This helper is for "within a given window" rendering.
+    It divides ONLY the given window length (parent_days) by 120 ratios.
     """
     if start_lord not in ORDER:
         raise ValueError(f"Invalid lord: {start_lord}")
@@ -88,7 +97,6 @@ def build_level_list(
         sub_days = parent_days * (yrs / 120.0)
         cur_end = _add_days(cur_start, sub_days)
 
-        # force exact end on last item
         if idx == len(ORDER) - 1 or cur_end > end_utc:
             cur_end = end_utc
 
@@ -103,11 +111,7 @@ def build_level_list(
     return out
 
 
-def build_mahadasha_list_120y_9items(
-    start_utc: datetime,
-    maha_lord: str,
-    maha_balance_years: Optional[float] = None,
-) -> List[Dict]:
+def build_mahadasha_list_120y_9items(start_utc: datetime, maha_lord: str, maha_balance_years: Optional[float] = None) -> List[Dict]:
     """
     ✅ FAST: returns ONLY 9 Mahadashas covering ~120 years
     First MD uses maha_balance_years (remaining), then full MDs in ORDER.
@@ -132,13 +136,11 @@ def build_mahadasha_list_120y_9items(
     out: List[Dict] = []
     cur_start = start_utc
 
-    # 1) first remaining
     first_days = _days_of_years(first_years)
     first_end = _add_days(cur_start, first_days)
     out.append(_make_node("mahadasha", maha_lord, cur_start, first_end))
     cur_start = first_end
 
-    # 2) remaining 8 full MDs
     lord = _next_lord(maha_lord)
     for _ in range(8):
         yrs = float(DASHA_YEARS[lord])
@@ -152,7 +154,103 @@ def build_mahadasha_list_120y_9items(
 
 
 # ------------------------------------------------------------
-# ✅ EXISTING FUNCTIONS (UNCHANGED) - keep compatibility
+# ✅ CORE FIX: CLIP CHILD PERIODS BASED ON FULL PARENT, NOT "REMAINING"
+# ------------------------------------------------------------
+def _ensure_utc(dt: datetime) -> datetime:
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def _intersect(a0: datetime, a1: datetime, b0: datetime, b1: datetime) -> Optional[Tuple[datetime, datetime]]:
+    if a1 <= a0 or b1 <= b0:
+        return None
+    s = a0 if a0 >= b0 else b0
+    e = a1 if a1 <= b1 else b1
+    if e <= s:
+        return None
+    return (s, e)
+
+
+def _build_clipped_level(
+    level: str,
+    parent_lord: str,
+    parent_full_start: datetime,
+    parent_full_days: float,
+    clip_start: datetime,
+    clip_end: datetime,
+    max_levels: int,
+) -> List[Dict]:
+    """
+    Build one level (9 lords in ORDER starting at parent_lord) based on FULL parent duration,
+    then CLIP to [clip_start, clip_end]. For every clipped segment, optionally build children recursively.
+    """
+    if parent_lord not in ORDER:
+        raise ValueError(f"Invalid lord: {parent_lord}")
+
+    parent_full_start = _ensure_utc(parent_full_start)
+    clip_start = _ensure_utc(clip_start)
+    clip_end = _ensure_utc(clip_end)
+
+    if clip_end <= clip_start:
+        return []
+
+    parent_full_end = _add_days(parent_full_start, parent_full_days)
+
+    # Clamp clip window to parent full window
+    window = _intersect(clip_start, clip_end, parent_full_start, parent_full_end)
+    if not window:
+        return []
+    win_start, win_end = window
+
+    out: List[Dict] = []
+    cur_full_start = parent_full_start
+    lord = parent_lord
+
+    for idx in range(len(ORDER)):
+        yrs = float(DASHA_YEARS[lord])
+        seg_full_days = parent_full_days * (yrs / 120.0)
+        seg_full_end = _add_days(cur_full_start, seg_full_days)
+
+        # Make the last segment end exactly at full_end to avoid drift
+        if idx == len(ORDER) - 1 or seg_full_end > parent_full_end:
+            seg_full_end = parent_full_end
+
+        seg_clip = _intersect(cur_full_start, seg_full_end, win_start, win_end)
+        if seg_clip:
+            seg_start, seg_end = seg_clip
+            node = _make_node(level, lord, seg_start, seg_end)
+
+            if max_levels > 1:
+                next_level = LEVEL_NEXT.get(level)
+                if next_level:
+                    child_key = LEVEL_CHILD_KEY[level]
+                    child_full_start = cur_full_start
+                    child_full_days = (seg_full_end - cur_full_start).total_seconds() / 86400.0  # full, not clipped
+                    children = _build_clipped_level(
+                        level=next_level,
+                        parent_lord=lord,  # sequence starts from THIS segment lord (classic)
+                        parent_full_start=child_full_start,
+                        parent_full_days=child_full_days,
+                        clip_start=seg_start,  # clip to current remaining window within this segment
+                        clip_end=seg_end,
+                        max_levels=max_levels - 1,
+                    )
+                    _attach_children(node, child_key, children)
+
+            out.append(node)
+
+        cur_full_start = seg_full_end
+        lord = _next_lord(lord)
+
+        if cur_full_start >= parent_full_end:
+            break
+        if cur_full_start >= win_end:
+            break
+
+    return out
+
+
+# ------------------------------------------------------------
+# ✅ EXISTING FUNCTIONS (fixed internals, same signatures)
 # ------------------------------------------------------------
 def build_vimshottari_tree(
     start_utc: datetime,
@@ -163,113 +261,54 @@ def build_vimshottari_tree(
     """
     Builds ONE Mahadasha tree with keys:
     mahadasha -> bhukti -> antara -> sukshma -> prana
-    Returns: [maha_node]
+
+    ✅ FIX:
+    If maha_balance_years is given (remaining), we DO NOT restart bhukti from maha_lord.
+    We build full MD (planet total years), compute elapsed = total - remaining,
+    then clip bhukti/antara/sukshma/prana to the remaining window.
     """
     if maha_lord not in ORDER:
         raise ValueError(f"Invalid maha lord: {maha_lord}")
 
-    if start_utc.tzinfo is None:
-        start_utc = start_utc.replace(tzinfo=timezone.utc)
+    start_utc = _ensure_utc(start_utc)
 
     maha_total_years = float(DASHA_YEARS[maha_lord])
     if maha_balance_years is None:
-        maha_years = maha_total_years
+        maha_remaining_years = maha_total_years
     else:
-        maha_years = float(maha_balance_years)
-        if maha_years < 0:
-            maha_years = 0.0
-        if maha_years > maha_total_years:
-            maha_years = maha_total_years
+        maha_remaining_years = float(maha_balance_years)
+        if maha_remaining_years < 0:
+            maha_remaining_years = 0.0
+        if maha_remaining_years > maha_total_years:
+            maha_remaining_years = maha_total_years
 
-    maha_days = _days_of_years(maha_years)
+    full_days = _days_of_years(maha_total_years)
+    rem_days = _days_of_years(maha_remaining_years)
+    elapsed_days = max(0.0, full_days - rem_days)
+
+    # We are given "current time" = start_utc (somewhere inside the MD)
+    full_start = _add_days(start_utc, -elapsed_days)
+    full_end = _add_days(full_start, full_days)
 
     maha_start = start_utc
-    maha_end = _add_days(maha_start, maha_days)
+    maha_end = _add_days(maha_start, rem_days)
+
+    # Node is ONLY the remaining window (like you want in UI)
     maha_node = _make_node("mahadasha", maha_lord, maha_start, maha_end)
 
-    if max_levels <= 1:
+    if max_levels <= 1 or maha_end <= maha_start:
         return [maha_node]
 
-    bhukti_nodes: List[Dict] = []
-    cur_start = maha_start
-    ad_lord = maha_lord
-
-    for idx in range(len(ORDER)):
-        ad_years = DASHA_YEARS[ad_lord]
-        ad_days = maha_days * (ad_years / 120.0)
-        cur_end = _add_days(cur_start, ad_days)
-
-        if idx == len(ORDER) - 1:
-            cur_end = maha_end
-
-        bh = _make_node("bhukti", ad_lord, cur_start, cur_end)
-
-        if max_levels > 2:
-            antara_nodes: List[Dict] = []
-            cur2_start = cur_start
-            pd_lord = ad_lord
-
-            for jdx in range(len(ORDER)):
-                pd_years = DASHA_YEARS[pd_lord]
-                pd_days = ad_days * (pd_years / 120.0)
-                cur2_end = _add_days(cur2_start, pd_days)
-
-                if jdx == len(ORDER) - 1:
-                    cur2_end = cur_end
-
-                an = _make_node("antara", pd_lord, cur2_start, cur2_end)
-
-                if max_levels > 3:
-                    suk_nodes: List[Dict] = []
-                    cur3_start = cur2_start
-                    sd_lord = pd_lord
-
-                    for kdx in range(len(ORDER)):
-                        sd_years = DASHA_YEARS[sd_lord]
-                        sd_days = pd_days * (sd_years / 120.0)
-                        cur3_end = _add_days(cur3_start, sd_days)
-
-                        if kdx == len(ORDER) - 1:
-                            cur3_end = cur2_end
-
-                        su = _make_node("sukshma", sd_lord, cur3_start, cur3_end)
-
-                        if max_levels > 4:
-                            pr_nodes: List[Dict] = []
-                            cur4_start = cur3_start
-                            pr_lord = sd_lord
-
-                            for mdx in range(len(ORDER)):
-                                pr_years = DASHA_YEARS[pr_lord]
-                                pr_days = sd_days * (pr_years / 120.0)
-                                cur4_end = _add_days(cur4_start, pr_days)
-
-                                if mdx == len(ORDER) - 1:
-                                    cur4_end = cur3_end
-
-                                pr = _make_node("prana", pr_lord, cur4_start, cur4_end)
-                                pr_nodes.append(pr)
-                                cur4_start = cur4_end
-                                pr_lord = _next_lord(pr_lord)
-
-                            _attach_children(su, "prana", pr_nodes)
-
-                        suk_nodes.append(su)
-                        cur3_start = cur3_end
-                        sd_lord = _next_lord(sd_lord)
-
-                    _attach_children(an, "sukshma", suk_nodes)
-
-                antara_nodes.append(an)
-                cur2_start = cur2_end
-                pd_lord = _next_lord(pd_lord)
-
-            _attach_children(bh, "antara", antara_nodes)
-
-        bhukti_nodes.append(bh)
-        cur_start = cur_end
-        ad_lord = _next_lord(ad_lord)
-
+    # Build bhukti based on FULL MD schedule, then clip to [maha_start, maha_end]
+    bhukti_nodes = _build_clipped_level(
+        level="bhukti",
+        parent_lord=maha_lord,
+        parent_full_start=full_start,
+        parent_full_days=full_days,
+        clip_start=maha_start,
+        clip_end=maha_end,
+        max_levels=max_levels - 1,
+    )
     _attach_children(maha_node, "bhukti", bhukti_nodes)
     return [maha_node]
 
@@ -284,12 +323,13 @@ def build_vimshottari_timeline_120y(
     Returns LIST of Mahadasha nodes covering EXACT ~120 years from start_utc.
     First MD uses maha_balance_years (remaining), then continues full MDs in ORDER.
     Each MD includes bhukti->antara->sukshma->prana upto max_levels.
+
+    ✅ With the new build_vimshottari_tree(), the first MD correctly clips bhuktis/antaras/etc.
     """
     if maha_lord not in ORDER:
         raise ValueError(f"Invalid maha lord: {maha_lord}")
 
-    if start_utc.tzinfo is None:
-        start_utc = start_utc.replace(tzinfo=timezone.utc)
+    start_utc = _ensure_utc(start_utc)
 
     TOTAL_YEARS = 120.0
 
@@ -307,14 +347,15 @@ def build_vimshottari_timeline_120y(
     cur_start = start_utc
     used_years = 0.0
 
-    def _append_md(md_lord: str, md_years: float):
+    def _append_md(md_lord: str, md_years_remaining: float):
         nonlocal cur_start, used_years, out
-        if md_years <= 0:
+        if md_years_remaining <= 0:
             return
+
         one = build_vimshottari_tree(
             start_utc=cur_start,
             maha_lord=md_lord,
-            maha_balance_years=md_years,
+            maha_balance_years=md_years_remaining,
             max_levels=max_levels,
         )
         md_node = one[0] if one else None
@@ -325,11 +366,11 @@ def build_vimshottari_timeline_120y(
 
         end_iso = md_node.get("end")
         if isinstance(end_iso, str) and end_iso:
-            cur_start = datetime.fromisoformat(end_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+            cur_start = _parse_iso_utc(end_iso)
         else:
-            cur_start = _add_days(cur_start, _days_of_years(md_years))
+            cur_start = _add_days(cur_start, _days_of_years(md_years_remaining))
 
-        used_years += md_years
+        used_years += md_years_remaining
 
     remaining = TOTAL_YEARS - used_years
     _append_md(maha_lord, min(first_years, remaining))

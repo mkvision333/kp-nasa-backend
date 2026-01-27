@@ -772,8 +772,39 @@ def astro_home(req: HomeReq):
 
 
 # -------------------------------------------------
-# LAZY DASHA APIs (unchanged)
+# LAZY DASHA APIs (FIXED: Correct elapsed/clip logic)
 # -------------------------------------------------
+from pydantic import BaseModel
+from typing import Any, Dict, Optional, List
+from datetime import datetime, timezone
+import time
+
+from app.core.vimshottari_tree import (
+    build_mahadasha_list_120y_9items,
+    build_vimshottari_tree,
+)
+
+# keep your existing helpers:
+# - local_to_utc_iso
+# - get_planets_ecliptic
+# - normalize_ayanamsa_name
+# - pick_ayanamsa_deg
+# - norm360
+# - moon_vimshottari_info
+# - _make_key
+# - _SESSION
+# - _cache_get / _cache_set
+# - _iso_to_dt (if you want, but not needed below)
+
+def _parse_iso_utc(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+def _years_between_iso(start_iso: str, end_iso: str) -> float:
+    s = _parse_iso_utc(start_iso)
+    e = _parse_iso_utc(end_iso)
+    days = (e - s).total_seconds() / 86400.0
+    return float(days) / 365.2425
+
 class DashaBaseReq(BaseModel):
     datetimeLocal: str
     tz: str
@@ -808,7 +839,7 @@ def _ensure_session(req: DashaBaseReq) -> Dict[str, Any]:
     moon_sid = norm360(moon_trop - float(ayan))
     maha_lord, balance_years = moon_vimshottari_info(moon_sid)
     balance_years = max(0.0, float(balance_years))
-    start_utc = datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
+    start_utc = _parse_iso_utc(utc_iso)
 
     key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
     ses = {
@@ -830,6 +861,7 @@ def _ensure_session(req: DashaBaseReq) -> Dict[str, Any]:
 def dasha_maha(req: DashaBaseReq):
     ayan_name = normalize_ayanamsa_name(req.ayanamsa)
     key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
+
     cached = _cache_get(f"maha:{key}")
     if cached:
         return cached
@@ -852,74 +884,132 @@ def dasha_maha(req: DashaBaseReq):
         },
         "maha": maha_list,
     }
-
     _cache_set(f"maha:{key}", out)
     return out
 
+# ✅ FIXED: Bhukti/Antara/Sukshma/Prana are built from FULL MD schedule then clipped,
+# not by dividing remaining window.
+
 @app.post("/api/dasha/bhukti")
 def dasha_bhukti(req: DashaLevelReq):
-    cached = _cache_get(f"bh:{req.key}:{req.mahaLord}:{req.start}:{req.end}")
+    cached = _cache_get(f"bh2:{req.key}:{req.mahaLord}:{req.start}:{req.end}")
     if cached:
         return cached
 
-    start = _iso_to_dt(req.start)
-    end = _iso_to_dt(req.end)
     maha = str(req.mahaLord or "").strip()
     if not maha:
         raise ValueError("mahaLord required")
 
-    bh = build_level_list("bhukti", start, end, maha)
+    rem_years = _years_between_iso(req.start, req.end)
+    tree = build_vimshottari_tree(
+        start_utc=_parse_iso_utc(req.start),
+        maha_lord=maha,
+        maha_balance_years=rem_years,
+        max_levels=2,
+    )
+    bh = (tree[0] or {}).get("bhukti", []) if tree else []
     out = {"bhukti": bh}
-    _cache_set(f"bh:{req.key}:{maha}:{req.start}:{req.end}", out)
+    _cache_set(f"bh2:{req.key}:{maha}:{req.start}:{req.end}", out)
     return out
 
 @app.post("/api/dasha/antara")
 def dasha_antara(req: DashaLevelReq):
-    cached = _cache_get(f"an:{req.key}:{req.bhuktiLord}:{req.start}:{req.end}")
+    cached = _cache_get(f"an2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.start}:{req.end}")
     if cached:
         return cached
 
-    start = _iso_to_dt(req.start)
-    end = _iso_to_dt(req.end)
-    bh = str(req.bhuktiLord or "").strip()
-    if not bh:
+    maha = str(req.mahaLord or "").strip()
+    bh_lord = str(req.bhuktiLord or "").strip()
+    if not maha:
+        raise ValueError("mahaLord required")
+    if not bh_lord:
         raise ValueError("bhuktiLord required")
 
-    an = build_level_list("antara", start, end, bh)
+    rem_years = _years_between_iso(req.start, req.end)
+    tree = build_vimshottari_tree(
+        start_utc=_parse_iso_utc(req.start),
+        maha_lord=maha,
+        maha_balance_years=rem_years,
+        max_levels=3,
+    )
+    bh_list = (tree[0] or {}).get("bhukti", []) if tree else []
+    target = next((x for x in bh_list if str(x.get("lord")) == bh_lord and x.get("start") == req.start and x.get("end") == req.end), None)
+    if target is None:
+        # fallback: find by lord and containing window
+        target = next((x for x in bh_list if str(x.get("lord")) == bh_lord), None)
+
+    an = (target or {}).get("antara", [])
     out = {"antara": an}
-    _cache_set(f"an:{req.key}:{bh}:{req.start}:{req.end}", out)
+    _cache_set(f"an2:{req.key}:{maha}:{bh_lord}:{req.start}:{req.end}", out)
     return out
 
 @app.post("/api/dasha/sukshma")
 def dasha_sukshma(req: DashaLevelReq):
-    cached = _cache_get(f"su:{req.key}:{req.antaraLord}:{req.start}:{req.end}")
+    cached = _cache_get(f"su2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.start}:{req.end}")
     if cached:
         return cached
 
-    start = _iso_to_dt(req.start)
-    end = _iso_to_dt(req.end)
-    an = str(req.antaraLord or "").strip()
-    if not an:
+    maha = str(req.mahaLord or "").strip()
+    bh_lord = str(req.bhuktiLord or "").strip()
+    an_lord = str(req.antaraLord or "").strip()
+    if not maha:
+        raise ValueError("mahaLord required")
+    if not bh_lord:
+        raise ValueError("bhuktiLord required")
+    if not an_lord:
         raise ValueError("antaraLord required")
 
-    su = build_level_list("sukshma", start, end, an)
+    rem_years = _years_between_iso(req.start, req.end)
+    tree = build_vimshottari_tree(
+        start_utc=_parse_iso_utc(req.start),
+        maha_lord=maha,
+        maha_balance_years=rem_years,
+        max_levels=4,
+    )
+    bh_list = (tree[0] or {}).get("bhukti", []) if tree else []
+    bh_node = next((x for x in bh_list if str(x.get("lord")) == bh_lord), None)
+    an_list = (bh_node or {}).get("antara", [])
+    an_node = next((x for x in an_list if str(x.get("lord")) == an_lord), None)
+
+    su = (an_node or {}).get("sukshma", [])
     out = {"sukshma": su}
-    _cache_set(f"su:{req.key}:{an}:{req.start}:{req.end}", out)
+    _cache_set(f"su2:{req.key}:{maha}:{bh_lord}:{an_lord}:{req.start}:{req.end}", out)
     return out
 
 @app.post("/api/dasha/prana")
 def dasha_prana(req: DashaLevelReq):
-    cached = _cache_get(f"pr:{req.key}:{req.sukshmaLord}:{req.start}:{req.end}")
+    cached = _cache_get(f"pr2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.sukshmaLord}:{req.start}:{req.end}")
     if cached:
         return cached
 
-    start = _iso_to_dt(req.start)
-    end = _iso_to_dt(req.end)
-    su = str(req.sukshmaLord or "").strip()
-    if not su:
+    maha = str(req.mahaLord or "").strip()
+    bh_lord = str(req.bhuktiLord or "").strip()
+    an_lord = str(req.antaraLord or "").strip()
+    su_lord = str(req.sukshmaLord or "").strip()
+    if not maha:
+        raise ValueError("mahaLord required")
+    if not bh_lord:
+        raise ValueError("bhuktiLord required")
+    if not an_lord:
+        raise ValueError("antaraLord required")
+    if not su_lord:
         raise ValueError("sukshmaLord required")
 
-    pr = build_level_list("prana", start, end, su)
+    rem_years = _years_between_iso(req.start, req.end)
+    tree = build_vimshottari_tree(
+        start_utc=_parse_iso_utc(req.start),
+        maha_lord=maha,
+        maha_balance_years=rem_years,
+        max_levels=5,
+    )
+    bh_list = (tree[0] or {}).get("bhukti", []) if tree else []
+    bh_node = next((x for x in bh_list if str(x.get("lord")) == bh_lord), None)
+    an_list = (bh_node or {}).get("antara", [])
+    an_node = next((x for x in an_list if str(x.get("lord")) == an_lord), None)
+    su_list = (an_node or {}).get("sukshma", [])
+    su_node = next((x for x in su_list if str(x.get("lord")) == su_lord), None)
+
+    pr = (su_node or {}).get("prana", [])
     out = {"prana": pr}
-    _cache_set(f"pr:{req.key}:{su}:{req.start}:{req.end}", out)
+    _cache_set(f"pr2:{req.key}:{maha}:{bh_lord}:{an_lord}:{su_lord}:{req.start}:{req.end}", out)
     return out
