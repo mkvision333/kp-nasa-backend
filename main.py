@@ -533,8 +533,12 @@ def astro_home(req: HomeReq):
 
 
 # -------------------------------------------------
-# LAZY DASHA APIs (elapsed-aware / clipped)
+# LAZY DASHA APIs (elapsed-aware / clipped) ✅ FULL REPLACE
 # -------------------------------------------------
+from fastapi import HTTPException
+from typing import Tuple
+from datetime import timedelta
+
 class DashaBaseReq(BaseModel):
     datetimeLocal: str
     tz: str
@@ -554,7 +558,6 @@ class DashaLevelReq(BaseModel):
 def _ensure_session(req: DashaBaseReq) -> Dict[str, Any]:
     utc_iso = local_to_utc_iso(req.datetimeLocal, req.tz)
     jd_ut, planets = get_planets_ecliptic(utc_iso, req.lat, req.lon)
-
     ayan_name = normalize_ayanamsa_name(req.ayanamsa)
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
 
@@ -570,7 +573,18 @@ def _ensure_session(req: DashaBaseReq) -> Dict[str, Any]:
     maha_lord, balance_years = moon_vimshottari_info(moon_sid)
 
     key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
-    ses = {"_ts": time.time(), "key": key, "utc_iso": utc_iso, "jd_ut": jd_ut, "ayanamsa": ayan_name, "ayan_deg": float(ayan), "moon_sid": float(moon_sid), "maha_lord": str(maha_lord), "balance_years": float(max(0.0, balance_years)), "start_utc": _parse_iso_utc(utc_iso)}
+    ses = {
+        "_ts": time.time(),
+        "key": key,
+        "utc_iso": utc_iso,
+        "jd_ut": jd_ut,
+        "ayanamsa": ayan_name,
+        "ayan_deg": float(ayan),
+        "moon_sid": float(moon_sid),
+        "maha_lord": str(maha_lord),
+        "balance_years": float(max(0.0, balance_years)),
+        "start_utc": _parse_iso_utc(utc_iso),
+    }
     _SESSION[key] = ses
     return ses
 
@@ -604,41 +618,65 @@ def dasha_bhukti(req: DashaLevelReq):
     _cache_set(f"bh2:{req.key}:{maha}:{req.start}:{req.end}", out)
     return out
 
+# ---------- ✅ NEW HELPERS (use cached /maha list as truth) ----------
+def _days_of_years(y: float) -> float:
+    return float(y) * 365.2425
+
+def _get_maha_node_from_cache(key: str, maha_lord: str) -> Dict[str, Any]:
+    cached = _cache_get(f"maha:{key}")
+    if not cached:
+        raise ValueError("maha cache missing. Call /api/dasha/maha first.")
+    maha = cached.get("maha") or []
+    for md in maha:
+        if str(md.get("lord") or "").strip() == str(maha_lord).strip():
+            return md
+    raise ValueError(f"mahaLord not found in cached maha list: {maha_lord}")
+
+def _md_full_window_from_cached_maha(key: str, maha_lord: str) -> Tuple[datetime, datetime, datetime, datetime]:
+    md = _get_maha_node_from_cache(key, maha_lord)
+    md_clip_start = _iso_to_dt(str(md.get("start")))
+    md_clip_end = _iso_to_dt(str(md.get("end")))
+
+    total_years = float(DASHA_YEARS.get(maha_lord, 0.0))
+    rem_years = _years_between_iso(str(md.get("start")), str(md.get("end")))
+    rem_years = max(0.0, min(rem_years, total_years))
+
+    elapsed_years = max(0.0, total_years - rem_years)
+    md_full_start = md_clip_start - timedelta(days=_days_of_years(elapsed_years))
+    md_full_end = md_full_start + timedelta(days=_days_of_years(total_years))
+
+    return md_clip_start, md_clip_end, md_full_start, md_full_end
+
+# ---------- ✅ FIXED: Antara/Sukshma/Prana ----------
 @app.post("/api/dasha/antara")
 def dasha_antara(req: DashaLevelReq):
     try:
-        cached = _cache_get(f"an2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.start}:{req.end}")
+        cached = _cache_get(f"an3:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.start}:{req.end}")
         if cached:
             return cached
 
         maha = str(req.mahaLord or "").strip()
         bh = str(req.bhuktiLord or "").strip()
-        if not maha:
-            raise ValueError("mahaLord required")
-        if not bh:
-            raise ValueError("bhuktiLord required")
+        if not maha: raise ValueError("mahaLord required")
+        if not bh: raise ValueError("bhuktiLord required")
 
-        rem_years = _years_between_iso(req.start, req.end)
-        md_total_years = float(DASHA_YEARS.get(maha, 0.0))
-        md_total_days = md_total_years * 365.2425
-        md_rem_days = max(0.0, rem_years * 365.2425)
-        md_elapsed_days = max(0.0, md_total_days - md_rem_days)
+        bh_s = _iso_to_dt(req.start)
+        bh_e = _iso_to_dt(req.end)
 
-        md_clip_start = _parse_iso_utc(req.start)
-        md_clip_end = _parse_iso_utc(req.end)
-        md_full_start = _add_days(md_clip_start, -md_elapsed_days)
-        md_full_end = _add_days(md_full_start, md_total_days)
+        _, _, md_full_s, md_full_e = _md_full_window_from_cached_maha(req.key, maha)
 
-        bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
+        bh_full = get_child_full_window(maha, md_full_s, md_full_e, bh, bh_s, bh_e)
         if not bh_full:
             out = {"antara": []}
-            _cache_set(f"an2:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
+            _cache_set(f"an3:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
             return out
 
-        bh_full_start, bh_full_end = bh_full
-        an = build_level_list_clipped(level="antara", parent_lord=bh, parent_full_start=bh_full_start, parent_full_end=bh_full_end, clip_start=md_clip_start, clip_end=md_clip_end)
-        out = {"antara": an}
-        _cache_set(f"an2:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
+        bh_full_s, bh_full_e = bh_full
+
+        an_list = build_level_list_clipped("antara", bh, bh_full_s, bh_full_e, bh_s, bh_e)
+
+        out = {"antara": an_list}
+        _cache_set(f"an3:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
         return out
 
     except Exception as e:
@@ -647,48 +685,40 @@ def dasha_antara(req: DashaLevelReq):
 @app.post("/api/dasha/sukshma")
 def dasha_sukshma(req: DashaLevelReq):
     try:
-        cached = _cache_get(f"su2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.start}:{req.end}")
+        cached = _cache_get(f"su3:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.start}:{req.end}")
         if cached:
             return cached
 
         maha = str(req.mahaLord or "").strip()
         bh = str(req.bhuktiLord or "").strip()
         an = str(req.antaraLord or "").strip()
-        if not maha:
-            raise ValueError("mahaLord required")
-        if not bh:
-            raise ValueError("bhuktiLord required")
-        if not an:
-            raise ValueError("antaraLord required")
+        if not maha: raise ValueError("mahaLord required")
+        if not bh: raise ValueError("bhuktiLord required")
+        if not an: raise ValueError("antaraLord required")
 
-        rem_years = _years_between_iso(req.start, req.end)
-        md_total_years = float(DASHA_YEARS.get(maha, 0.0))
-        md_total_days = md_total_years * 365.2425
-        md_rem_days = max(0.0, rem_years * 365.2425)
-        md_elapsed_days = max(0.0, md_total_days - md_rem_days)
+        an_s = _iso_to_dt(req.start)
+        an_e = _iso_to_dt(req.end)
 
-        md_clip_start = _parse_iso_utc(req.start)
-        md_clip_end = _parse_iso_utc(req.end)
-        md_full_start = _add_days(md_clip_start, -md_elapsed_days)
-        md_full_end = _add_days(md_full_start, md_total_days)
+        _, _, md_full_s, md_full_e = _md_full_window_from_cached_maha(req.key, maha)
 
-        bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
+        bh_full = get_child_full_window(maha, md_full_s, md_full_e, bh, an_s, an_e)
         if not bh_full:
             out = {"sukshma": []}
-            _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
+            _cache_set(f"su3:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
             return out
-        bh_full_start, bh_full_end = bh_full
+        bh_full_s, bh_full_e = bh_full
 
-        an_full = get_child_full_window(bh, bh_full_start, bh_full_end, an, md_clip_start, md_clip_end)
+        an_full = get_child_full_window(bh, bh_full_s, bh_full_e, an, an_s, an_e)
         if not an_full:
             out = {"sukshma": []}
-            _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
+            _cache_set(f"su3:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
             return out
-        an_full_start, an_full_end = an_full
+        an_full_s, an_full_e = an_full
 
-        su = build_level_list_clipped(level="sukshma", parent_lord=an, parent_full_start=an_full_start, parent_full_end=an_full_end, clip_start=md_clip_start, clip_end=md_clip_end)
-        out = {"sukshma": su}
-        _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
+        su_list = build_level_list_clipped("sukshma", an, an_full_s, an_full_e, an_s, an_e)
+
+        out = {"sukshma": su_list}
+        _cache_set(f"su3:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
         return out
 
     except Exception as e:
@@ -697,7 +727,7 @@ def dasha_sukshma(req: DashaLevelReq):
 @app.post("/api/dasha/prana")
 def dasha_prana(req: DashaLevelReq):
     try:
-        cached = _cache_get(f"pr2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.sukshmaLord}:{req.start}:{req.end}")
+        cached = _cache_get(f"pr3:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.sukshmaLord}:{req.start}:{req.end}")
         if cached:
             return cached
 
@@ -705,50 +735,41 @@ def dasha_prana(req: DashaLevelReq):
         bh = str(req.bhuktiLord or "").strip()
         an = str(req.antaraLord or "").strip()
         su = str(req.sukshmaLord or "").strip()
-        if not maha:
-            raise ValueError("mahaLord required")
-        if not bh:
-            raise ValueError("bhuktiLord required")
-        if not an:
-            raise ValueError("antaraLord required")
-        if not su:
-            raise ValueError("sukshmaLord required")
+        if not maha: raise ValueError("mahaLord required")
+        if not bh: raise ValueError("bhuktiLord required")
+        if not an: raise ValueError("antaraLord required")
+        if not su: raise ValueError("sukshmaLord required")
 
-        rem_years = _years_between_iso(req.start, req.end)
-        md_total_years = float(DASHA_YEARS.get(maha, 0.0))
-        md_total_days = md_total_years * 365.2425
-        md_rem_days = max(0.0, rem_years * 365.2425)
-        md_elapsed_days = max(0.0, md_total_days - md_rem_days)
+        su_s = _iso_to_dt(req.start)
+        su_e = _iso_to_dt(req.end)
 
-        md_clip_start = _parse_iso_utc(req.start)
-        md_clip_end = _parse_iso_utc(req.end)
-        md_full_start = _add_days(md_clip_start, -md_elapsed_days)
-        md_full_end = _add_days(md_full_start, md_total_days)
+        _, _, md_full_s, md_full_e = _md_full_window_from_cached_maha(req.key, maha)
 
-        bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
+        bh_full = get_child_full_window(maha, md_full_s, md_full_e, bh, su_s, su_e)
         if not bh_full:
             out = {"prana": []}
-            _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+            _cache_set(f"pr3:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
             return out
-        bh_full_start, bh_full_end = bh_full
+        bh_full_s, bh_full_e = bh_full
 
-        an_full = get_child_full_window(bh, bh_full_start, bh_full_end, an, md_clip_start, md_clip_end)
+        an_full = get_child_full_window(bh, bh_full_s, bh_full_e, an, su_s, su_e)
         if not an_full:
             out = {"prana": []}
-            _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+            _cache_set(f"pr3:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
             return out
-        an_full_start, an_full_end = an_full
+        an_full_s, an_full_e = an_full
 
-        su_full = get_child_full_window(an, an_full_start, an_full_end, su, md_clip_start, md_clip_end)
+        su_full = get_child_full_window(an, an_full_s, an_full_e, su, su_s, su_e)
         if not su_full:
             out = {"prana": []}
-            _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+            _cache_set(f"pr3:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
             return out
-        su_full_start, su_full_end = su_full
+        su_full_s, su_full_e = su_full
 
-        pr = build_level_list_clipped(level="prana", parent_lord=su, parent_full_start=su_full_start, parent_full_end=su_full_end, clip_start=md_clip_start, clip_end=md_clip_end)
-        out = {"prana": pr}
-        _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+        pr_list = build_level_list_clipped("prana", su, su_full_s, su_full_e, su_s, su_e)
+
+        out = {"prana": pr_list}
+        _cache_set(f"pr3:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
         return out
 
     except Exception as e:
