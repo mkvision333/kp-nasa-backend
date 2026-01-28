@@ -786,11 +786,8 @@ import time
 from app.core.vimshottari_tree import (
     build_mahadasha_list_120y_9items,
     build_vimshottari_tree,
-    build_level_list_clipped,
-    get_child_full_window,
     DASHA_YEARS,
 )
-from datetime import timedelta
 
 # keep your existing helpers:
 # - local_to_utc_iso
