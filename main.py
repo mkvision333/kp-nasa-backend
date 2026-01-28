@@ -4,16 +4,20 @@
 # - Keeps existing endpoints, caching, dasha, etc.
 # - NOTE: Part-2 will apply V2 inside /api/astro/home grahaTable generation.
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 import time
 import os
 import json
+
+def _add_days(dt: datetime, days: float) -> datetime:
+    return dt + timedelta(days=float(days))
+
 
 # (optional) rashiphal module (only if you created it)
 try:
@@ -780,11 +784,13 @@ from datetime import datetime, timezone
 import time
 
 from app.core.vimshottari_tree import (
+    build_mahadasha_list_120y_9items,
+    build_vimshottari_tree,
     build_level_list_clipped,
     get_child_full_window,
     DASHA_YEARS,
-    ORDER,
 )
+from datetime import timedelta
 
 # keep your existing helpers:
 # - local_to_utc_iso
