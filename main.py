@@ -780,8 +780,10 @@ from datetime import datetime, timezone
 import time
 
 from app.core.vimshottari_tree import (
-    build_mahadasha_list_120y_9items,
-    build_vimshottari_tree,
+    build_level_list_clipped,
+    get_child_full_window,
+    DASHA_YEARS,
+    ORDER,
 )
 
 # keep your existing helpers:
@@ -916,73 +918,185 @@ from fastapi import HTTPException
 
 @app.post("/api/dasha/antara")
 def dasha_antara(req: DashaLevelReq):
-    try:
-        cached = _cache_get(f"an:{req.key}:{req.bhuktiLord}:{req.start}:{req.end}")
-        if cached:
-            return cached
+    cached = _cache_get(f"an2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.start}:{req.end}")
+    if cached:
+        return cached
 
-        start = _iso_to_dt(req.start)
-        end = _iso_to_dt(req.end)
+    maha = str(req.mahaLord or "").strip()
+    bh = str(req.bhuktiLord or "").strip()
+    if not maha:
+        raise ValueError("mahaLord required")
+    if not bh:
+        raise ValueError("bhuktiLord required")
 
-        bh = str(req.bhuktiLord or "").strip()
-        if not bh:
-            raise ValueError("bhuktiLord required")
+    # Parent = Mahadasha FULL window (not remaining)
+    # We reconstruct FULL MD window using remaining years (end-start)
+    rem_years = _years_between_iso(req.start, req.end)
+    md_total_years = float(DASHA_YEARS.get(maha, 0.0))
+    md_total_days = md_total_years * 365.2425
+    md_rem_days = max(0.0, rem_years * 365.2425)
+    md_elapsed_days = max(0.0, md_total_days - md_rem_days)
 
-        an = build_level_list("antara", start, end, bh)
-        out = {"antara": an}
-        _cache_set(f"an:{req.key}:{bh}:{req.start}:{req.end}", out)
+    md_clip_start = _parse_iso_utc(req.start)
+    md_clip_end = _parse_iso_utc(req.end)
+    md_full_start = _add_days(md_clip_start, -md_elapsed_days)
+    md_full_end = _add_days(md_full_start, md_total_days)
+
+    # Child FULL window (Bhukti FULL window) inside MD FULL schedule
+    bh_clip_start = _parse_iso_utc(req.start)
+    bh_clip_end = _parse_iso_utc(req.end)
+    bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, bh_clip_start, bh_clip_end)
+    if not bh_full:
+        out = {"antara": []}
+        _cache_set(f"an2:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
         return out
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"antara error: {e}")
+    bh_full_start, bh_full_end = bh_full
 
+    # Build antara based on BHUKTI FULL schedule then clip to [start,end]
+    an = build_level_list_clipped(
+        level="antara",
+        parent_lord=bh,
+        parent_full_start=bh_full_start,
+        parent_full_end=bh_full_end,
+        clip_start=bh_clip_start,
+        clip_end=bh_clip_end,
+    )
 
-from fastapi import HTTPException
+    out = {"antara": an}
+    _cache_set(f"an2:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
+    return out
+
 
 @app.post("/api/dasha/sukshma")
 def dasha_sukshma(req: DashaLevelReq):
-    try:
-        cached = _cache_get(f"su:{req.key}:{req.antaraLord}:{req.start}:{req.end}")
-        if cached:
-            return cached
+    cached = _cache_get(f"su2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.start}:{req.end}")
+    if cached:
+        return cached
 
-        start = _iso_to_dt(req.start)
-        end = _iso_to_dt(req.end)
+    maha = str(req.mahaLord or "").strip()
+    bh = str(req.bhuktiLord or "").strip()
+    an = str(req.antaraLord or "").strip()
+    if not maha:
+        raise ValueError("mahaLord required")
+    if not bh:
+        raise ValueError("bhuktiLord required")
+    if not an:
+        raise ValueError("antaraLord required")
 
-        an = str(req.antaraLord or "").strip()
-        if not an:
-            raise ValueError("antaraLord required")
+    # Rebuild MD FULL window from remaining
+    rem_years = _years_between_iso(req.start, req.end)
+    md_total_years = float(DASHA_YEARS.get(maha, 0.0))
+    md_total_days = md_total_years * 365.2425
+    md_rem_days = max(0.0, rem_years * 365.2425)
+    md_elapsed_days = max(0.0, md_total_days - md_rem_days)
 
-        su = build_level_list("sukshma", start, end, an)
-        out = {"sukshma": su}
-        _cache_set(f"su:{req.key}:{an}:{req.start}:{req.end}", out)
+    md_clip_start = _parse_iso_utc(req.start)
+    md_clip_end = _parse_iso_utc(req.end)
+    md_full_start = _add_days(md_clip_start, -md_elapsed_days)
+    md_full_end = _add_days(md_full_start, md_total_days)
+
+    # Get BHUKTI FULL window inside MD FULL
+    bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
+    if not bh_full:
+        out = {"sukshma": []}
+        _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
         return out
+    bh_full_start, bh_full_end = bh_full
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"sukshma error: {e}")
+    # Get ANTARA FULL window inside BHUKTI FULL
+    an_clip_start = _parse_iso_utc(req.start)
+    an_clip_end = _parse_iso_utc(req.end)
+    an_full = get_child_full_window(bh, bh_full_start, bh_full_end, an, an_clip_start, an_clip_end)
+    if not an_full:
+        out = {"sukshma": []}
+        _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
+        return out
+    an_full_start, an_full_end = an_full
 
+    su = build_level_list_clipped(
+        level="sukshma",
+        parent_lord=an,
+        parent_full_start=an_full_start,
+        parent_full_end=an_full_end,
+        clip_start=an_clip_start,
+        clip_end=an_clip_end,
+    )
 
-from fastapi import HTTPException
+    out = {"sukshma": su}
+    _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
+    return out
+
 
 @app.post("/api/dasha/prana")
 def dasha_prana(req: DashaLevelReq):
-    try:
-        cached = _cache_get(f"pr:{req.key}:{req.sukshmaLord}:{req.start}:{req.end}")
-        if cached:
-            return cached
+    cached = _cache_get(f"pr2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.sukshmaLord}:{req.start}:{req.end}")
+    if cached:
+        return cached
 
-        start = _iso_to_dt(req.start)
-        end = _iso_to_dt(req.end)
+    maha = str(req.mahaLord or "").strip()
+    bh = str(req.bhuktiLord or "").strip()
+    an = str(req.antaraLord or "").strip()
+    su = str(req.sukshmaLord or "").strip()
+    if not maha:
+        raise ValueError("mahaLord required")
+    if not bh:
+        raise ValueError("bhuktiLord required")
+    if not an:
+        raise ValueError("antaraLord required")
+    if not su:
+        raise ValueError("sukshmaLord required")
 
-        su = str(req.sukshmaLord or "").strip()
-        if not su:
-            raise ValueError("sukshmaLord required")
+    # Rebuild MD FULL window from remaining
+    rem_years = _years_between_iso(req.start, req.end)
+    md_total_years = float(DASHA_YEARS.get(maha, 0.0))
+    md_total_days = md_total_years * 365.2425
+    md_rem_days = max(0.0, rem_years * 365.2425)
+    md_elapsed_days = max(0.0, md_total_days - md_rem_days)
 
-        pr = build_level_list("prana", start, end, su)
-        out = {"prana": pr}
-        _cache_set(f"pr:{req.key}:{su}:{req.start}:{req.end}", out)
+    md_clip_start = _parse_iso_utc(req.start)
+    md_clip_end = _parse_iso_utc(req.end)
+    md_full_start = _add_days(md_clip_start, -md_elapsed_days)
+    md_full_end = _add_days(md_full_start, md_total_days)
+
+    # BHUKTI FULL inside MD FULL
+    bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
+    if not bh_full:
+        out = {"prana": []}
+        _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
         return out
+    bh_full_start, bh_full_end = bh_full
 
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"prana error: {e}")
+    # ANTARA FULL inside BH FULL
+    an_clip_start = _parse_iso_utc(req.start)
+    an_clip_end = _parse_iso_utc(req.end)
+    an_full = get_child_full_window(bh, bh_full_start, bh_full_end, an, an_clip_start, an_clip_end)
+    if not an_full:
+        out = {"prana": []}
+        _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+        return out
+    an_full_start, an_full_end = an_full
+
+    # SUKSHMA FULL inside AN FULL
+    su_clip_start = _parse_iso_utc(req.start)
+    su_clip_end = _parse_iso_utc(req.end)
+    su_full = get_child_full_window(an, an_full_start, an_full_end, su, su_clip_start, su_clip_end)
+    if not su_full:
+        out = {"prana": []}
+        _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+        return out
+    su_full_start, su_full_end = su_full
+
+    pr = build_level_list_clipped(
+        level="prana",
+        parent_lord=su,
+        parent_full_start=su_full_start,
+        parent_full_end=su_full_end,
+        clip_start=su_clip_start,
+        clip_end=su_clip_end,
+    )
+
+    out = {"prana": pr}
+    _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+    return out
 
