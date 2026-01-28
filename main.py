@@ -1,23 +1,20 @@
-# main.py ✅ (PART 1/2 - FIRST HALF)
-# ✅ SAFE, non-breaking patch set:
-# - ADD: kp_star_sub_sub_v2() -> TRUE KP proportional Sub/SubSub calculation
-# - Keeps existing endpoints, caching, dasha, etc.
-# - NOTE: Part-2 will apply V2 inside /api/astro/home grahaTable generation.
+# main.py ✅ FULL REPLACE (Render-safe, no build_level_list import)
+# - Removes obsolete build_level_list import (caused ImportError)
+# - Exports: /api/astro/home + /api/dasha/* correct
+# - HOME includeDasha uses build_vimshottari_tree(max_levels=4) (no legacy)
+# - Lazy dasha endpoints use build_level_list_clipped + get_child_full_window
 
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 import time
 import os
 import json
 
-def _add_days(dt: datetime, days: float) -> datetime:
-    return dt + timedelta(days=float(days))
-
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 # (optional) rashiphal module (only if you created it)
 try:
@@ -28,7 +25,7 @@ except Exception:
 
 # ✅ TimezoneFinder (SAFE import)
 try:
-    from timezonefinder import TimezoneFinder  # pip install timezonefinder
+    from timezonefinder import TimezoneFinder
     _TZF = TimezoneFinder()
     _TZF_OK = True
     _TZF_ERR = ""
@@ -39,127 +36,72 @@ except Exception as _e:
 
 from app.core.models import NASAReq, NASAResp
 from app.core.jd import local_to_utc_iso
-from app.core.nasa_ephemeris import (
-    get_planets_ecliptic,
-    mean_lunar_node_tropical_deg,
-)
+from app.core.nasa_ephemeris import get_planets_ecliptic, mean_lunar_node_tropical_deg
 from app.core.ayanamsa_exact import get_ayanamsa_deg
-
 from app.core.rahu_ketu import calc_rahu_ketu
-# keep your original import (used in cusps + optional legacy)
-from app.core.kp_calc import kp_star_sub_sub
-
+from app.core.kp_calc import kp_star_sub_sub  # legacy (kept for bhava cusps)
 from app.core.houses_models import PlacidusReq, PlacidusResp
 from app.core.houses_placidus import placidus_cusps, siderealize_cusps
-
 from app.core.vimshottari_utils import moon_vimshottari_info
-from app.core.vimshottari_tree import build_mahadasha_list_120y_9items, build_level_list
+
+# ✅ IMPORTANT: NO build_level_list import!
+from app.core.vimshottari_tree import (
+    build_mahadasha_list_120y_9items,
+    build_vimshottari_tree,
+    build_level_list_clipped,
+    get_child_full_window,
+    DASHA_YEARS,
+)
 
 from app.core.panchangam_calc import compute_panchangam
+
 
 # -------------------------------------------------
 # App
 # -------------------------------------------------
 app = FastAPI(title="KP NASA Backend", version="1.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # -------------------------------------------------
-# ✅ Startup warm-up
+# Helpers
 # -------------------------------------------------
-@app.on_event("startup")
-def _startup_warm():
-    try:
-        utc_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        get_planets_ecliptic(utc_iso, 0.0, 0.0)
-        kp_star_sub_sub(0.0)
-        print("[STARTUP] warm ok", flush=True)
-    except Exception as e:
-        print(f"[STARTUP] warm fail: {e}", flush=True)
+def _add_days(dt: datetime, days: float) -> datetime:
+    return dt + timedelta(days=float(days))
 
-# -------------------------------------------------
-# ✅ Health / Debug (Render friendly)
-# -------------------------------------------------
-@app.get("/")
-def root():
-    return {"ok": True, "service": "kp-nasa-backend"}
-
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
-
-@app.get("/health")
-def health():
-    return {"ok": True, "service": "kp-nasa-backend"}
-
-@app.get("/debug/routes")
-def debug_routes():
-    return [r.path for r in app.routes]
-
-# -------------------------------------------------
-# ✅ Timezone API (worldwide)
-# -------------------------------------------------
-@app.get("/timezone")
-def timezone_lookup(lat: float = Query(...), lon: float = Query(...)):
-    if not _TZF_OK:
-        return {"tz": "UTC", "ok": False, "message": f"timezonefinder missing: {_TZF_ERR}"}
-
-    try:
-        tz = _TZF.timezone_at(lat=float(lat), lng=float(lon))
-        if not tz:
-            tz = _TZF.closest_timezone_at(lat=float(lat), lng=float(lon))
-        return {"tz": tz or "UTC", "ok": True}
-    except Exception as e:
-        return {"tz": "UTC", "ok": False, "message": str(e)}
-
-# -------------------------------------------------
-# ✅ Editorial JSON content
-# -------------------------------------------------
-@app.get("/content/utilities.json")
-def serve_utilities_json():
-    file_path = os.path.join("content", "utilities.json")
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return JSONResponse(content=data)
-    except Exception as e:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "utilities.json not found", "message": str(e), "path": file_path},
-        )
-
-# -------------------------------------------------
-# Utilities
-# -------------------------------------------------
 def norm360(x: float) -> float:
-    x = x % 360.0
+    x = float(x) % 360.0
     return x if x >= 0 else x + 360.0
 
 def _abs_to_dms(abs_deg: float) -> Dict[str, int]:
-    """
-    Stable DMS conversion for 0..360 longitudes.
-    Avoids rounding carry drift (+/- seconds/minutes) across planets.
-    """
     a = norm360(float(abs_deg))
-
-    # total seconds in circle, rounded to nearest integer second
-    total_sec = int(round(a * 3600.0))
-
-    # keep in [0, 360*3600)
-    total_sec = total_sec % int(360 * 3600)
-
+    total_sec = int(round(a * 3600.0)) % int(360 * 3600)
     deg = total_sec // 3600
     rem = total_sec % 3600
     minute = rem // 60
     sec = rem % 60
-
     return {"deg": int(deg), "min": int(minute), "sec": int(sec)}
+
+def _iso_to_dt(s: str) -> datetime:
+    return datetime.fromisoformat(str(s).replace("Z", "+00:00")).astimezone(timezone.utc)
+
+def _parse_iso_utc(s: str) -> datetime:
+    return _iso_to_dt(s)
+
+def _years_between_iso(start_iso: str, end_iso: str) -> float:
+    s = _parse_iso_utc(start_iso)
+    e = _parse_iso_utc(end_iso)
+    days = (e - s).total_seconds() / 86400.0
+    return float(days) / 365.2425
+
+def _bucket_datetimeLocal(dt_local: str, bucket_sec: int = 60) -> str:
+    try:
+        dt = datetime.fromisoformat(dt_local)
+        ts = int(dt.timestamp())
+        ts2 = ts - (ts % bucket_sec)
+        return datetime.fromtimestamp(ts2).isoformat()
+    except Exception:
+        return dt_local
 
 def normalize_ayanamsa_name(v: Optional[str]) -> str:
     s = str(v or "KP").strip().upper()
@@ -170,103 +112,50 @@ def normalize_ayanamsa_name(v: Optional[str]) -> str:
 def pick_ayanamsa_deg(jd_ut: float, ayanamsa_name: str) -> float:
     if ayanamsa_name == "LAHIRI":
         return float(get_ayanamsa_deg(jd_ut, "LAHIRI"))
-    return float(get_ayanamsa_deg(jd_ut, "KP"))  # default
-
-def _iso_to_dt(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
-
-def _bucket_datetimeLocal(dt_local: str, bucket_sec: int = 60) -> str:
-    try:
-        dt = datetime.fromisoformat(dt_local)
-        ts = int(dt.timestamp())
-        ts2 = ts - (ts % bucket_sec)
-        dt2 = datetime.fromtimestamp(ts2)
-        return dt2.isoformat()
-    except Exception:
-        return dt_local
+    return float(get_ayanamsa_deg(jd_ut, "KP"))
 
 def _make_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayanamsa: str) -> str:
     dtb = _bucket_datetimeLocal(datetimeLocal, 60)
     raw = f"{dtb}|{tz}|{float(lat):.5f}|{float(lon):.5f}|{ayanamsa}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
-# -----------------------------
-# ✅ Sign helpers
-# -----------------------------
-SIGN_NAMES = [
-    "", "Mesha", "Vrishabha", "Mithuna", "Karkataka", "Simha", "Kanya",
-    "Tula", "Vrischika", "Dhanu", "Makara", "Kumbha", "Meena"
-]
 
-SIGN_LORD_BY_SIGN: Dict[int, str] = {
-    1: "Mars",
-    2: "Venus",
-    3: "Mercury",
-    4: "Moon",
-    5: "Sun",
-    6: "Mercury",
-    7: "Venus",
-    8: "Mars",
-    9: "Jupiter",
-    10: "Saturn",
-    11: "Saturn",
-    12: "Jupiter",
-}
+# -----------------------------
+# Sign helpers
+# -----------------------------
+SIGN_NAMES = ["", "Mesha","Vrishabha","Mithuna","Karkataka","Simha","Kanya","Tula","Vrischika","Dhanu","Makara","Kumbha","Meena"]
+SIGN_LORD_BY_SIGN: Dict[int, str] = {1:"Mars",2:"Venus",3:"Mercury",4:"Moon",5:"Sun",6:"Mercury",7:"Venus",8:"Mars",9:"Jupiter",10:"Saturn",11:"Saturn",12:"Jupiter"}
 
 def sign_from_lon_deg(lon: float) -> int:
     d = norm360(float(lon))
-    return int(d // 30) + 1  # 1..12
+    return int(d // 30) + 1
 
 def house_from_lon_and_cusps(lon: float, cusps_sid_by_house: Dict[int, float]) -> int:
     lon = norm360(float(lon))
     cusp = {int(k): norm360(float(v)) for k, v in cusps_sid_by_house.items()}
-
     for h in range(1, 12):
-        a = cusp[h]
-        b = cusp[h + 1]
+        a, b = cusp[h], cusp[h + 1]
         if a <= b:
-            if a <= lon < b:
-                return h
+            if a <= lon < b: return h
         else:
-            if lon >= a or lon < b:
-                return h
-
-    a = cusp[12]
-    b = cusp[1]
+            if lon >= a or lon < b: return h
+    a, b = cusp[12], cusp[1]
     if a <= b:
-        if a <= lon < b:
-            return 12
+        if a <= lon < b: return 12
     else:
-        if lon >= a or lon < b:
-            return 12
+        if lon >= a or lon < b: return 12
     return 12
 
-# -----------------------------
-# ✅ Nakshatra helpers
-# -----------------------------
-NAK_NAMES = [
-    "Ashwini","Bharani","Krittika","Rohini","Mrigashirsha","Ardra","Punarvasu","Pushya","Ashlesha",
-    "Magha","Purva Phalguni","Uttara Phalguni","Hasta","Chitra","Swati","Vishakha","Anuradha","Jyeshtha",
-    "Mula","Purva Ashadha","Uttara Ashadha","Shravana","Dhanishta","Shatabhisha","Purva Bhadrapada","Uttara Bhadrapada","Revati"
-]
-NAK_LORDS = [
-    "Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury",
-    "Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury",
-    "Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury"
-]
-
-def nakshatra_from_lon_sid(lon_sid: float):
-    x = norm360(float(lon_sid))
-    idx = int(x // (360.0 / 27.0))  # 0..26
-    idx = max(0, min(26, idx))
-    return idx, NAK_NAMES[idx], NAK_LORDS[idx]
 
 # -----------------------------
-# ✅ TRUE KP Sub/SubSub (V2) - proportional Vimshottari subdivision
+# Nakshatra helpers
 # -----------------------------
+NAK_NAMES = ["Ashwini","Bharani","Krittika","Rohini","Mrigashirsha","Ardra","Punarvasu","Pushya","Ashlesha","Magha","Purva Phalguni","Uttara Phalguni","Hasta","Chitra","Swati","Vishakha","Anuradha","Jyeshtha","Mula","Purva Ashadha","Uttara Ashadha","Shravana","Dhanishta","Shatabhisha","Purva Bhadrapada","Uttara Bhadrapada","Revati"]
+NAK_LORDS = ["Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury","Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury","Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury"]
+NAK_SPAN = 360.0 / 27.0
+
 VIM_ORDER = ["Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury"]
 VIM_YEARS = {"Ketu":7,"Venus":20,"Sun":6,"Moon":10,"Mars":7,"Rahu":18,"Jupiter":16,"Saturn":19,"Mercury":17}
-NAK_SPAN = 360.0 / 27.0  # 13°20'
 
 def _cycle_from(lord: str) -> List[str]:
     lord = str(lord or "").strip()
@@ -276,23 +165,15 @@ def _cycle_from(lord: str) -> List[str]:
     return VIM_ORDER[i:] + VIM_ORDER[:i]
 
 def kp_star_sub_sub_v2(lon_sid: float):
-    """
-    Returns:
-      (starLord, subLord, subSubLord, nakIndex, nakName)
-    starLord = Nakshatra Lord
-    """
     x = norm360(float(lon_sid))
-    nak_index = int(x // NAK_SPAN)  # 0..26
+    nak_index = int(x // NAK_SPAN)
     nak_index = max(0, min(26, nak_index))
-
     nak_name = NAK_NAMES[nak_index]
     star_lord = NAK_LORDS[nak_index]
 
-    # offset inside nakshatra
     nak_start = nak_index * NAK_SPAN
-    offset = x - nak_start  # 0..NAK_SPAN
+    offset = x - nak_start
 
-    # SubLord
     seq1 = _cycle_from(star_lord)
     rem = offset
     sub_lord = seq1[0]
@@ -305,7 +186,6 @@ def kp_star_sub_sub_v2(lon_sid: float):
             break
         rem -= seg
 
-    # SubSubLord
     seq2 = _cycle_from(sub_lord)
     rem2 = rem
     subsub_lord = seq2[0]
@@ -327,26 +207,20 @@ def _build_moon_meta(planets_tropical: List[Dict[str, Any]], ayan_deg: float) ->
                 break
         if moon_trop is None:
             return None
-
         moon_sid = norm360(float(moon_trop) - float(ayan_deg))
-
-        rashi_idx0 = int(moon_sid // 30.0)
-        rashi_idx0 = max(0, min(11, rashi_idx0))
-        rashi_name = SIGN_NAMES[rashi_idx0 + 1]
-
-        nak_idx, nak_name, nak_lord = nakshatra_from_lon_sid(moon_sid)
-
+        rashi_idx0 = max(0, min(11, int(moon_sid // 30.0)))
         return {
             "moonLonTropicalDeg": float(moon_trop),
             "moonLonSiderealDeg": float(moon_sid),
-            "moonRashiIndex": int(rashi_idx0),   # 0..11
-            "moonRashiName": str(rashi_name),
-            "nakIndex": int(nak_idx),            # 0..26
-            "nakName": str(nak_name),
-            "nakLord": str(nak_lord),
+            "moonRashiIndex": int(rashi_idx0),
+            "moonRashiName": str(SIGN_NAMES[rashi_idx0 + 1]),
+            "nakIndex": int(moon_sid // NAK_SPAN),
+            "nakName": str(NAK_NAMES[int(moon_sid // NAK_SPAN)]),
+            "nakLord": str(NAK_LORDS[int(moon_sid // NAK_SPAN)]),
         }
     except Exception:
         return None
+
 
 # -------------------------------------------------
 # In-memory cache
@@ -358,11 +232,9 @@ TTL_SEC = 6 * 60 * 60
 def _gc():
     now = time.time()
     dead = [k for k, v in _SESSION.items() if now - float(v.get("_ts", now)) > TTL_SEC]
-    for k in dead:
-        _SESSION.pop(k, None)
+    for k in dead: _SESSION.pop(k, None)
     dead2 = [k for k, v in _CACHE.items() if now - float(v.get("_ts", now)) > TTL_SEC]
-    for k in dead2:
-        _CACHE.pop(k, None)
+    for k in dead2: _CACHE.pop(k, None)
 
 def _cache_get(key: str):
     _gc()
@@ -372,6 +244,72 @@ def _cache_get(key: str):
 def _cache_set(key: str, data: Any):
     _gc()
     _CACHE[key] = {"_ts": time.time(), "data": data}
+
+
+# -------------------------------------------------
+# Startup warm-up (safe)
+# -------------------------------------------------
+@app.on_event("startup")
+def _startup_warm():
+    try:
+        utc_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        get_planets_ecliptic(utc_iso, 0.0, 0.0)
+        kp_star_sub_sub(0.0)
+        print("[STARTUP] warm ok", flush=True)
+    except Exception as e:
+        print(f"[STARTUP] warm fail: {e}", flush=True)
+
+
+# -------------------------------------------------
+# Health / Debug
+# -------------------------------------------------
+@app.get("/")
+def root():
+    return {"ok": True, "service": "kp-nasa-backend"}
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
+@app.get("/health")
+def health():
+    return {"ok": True, "service": "kp-nasa-backend"}
+
+@app.get("/debug/routes")
+def debug_routes():
+    return [r.path for r in app.routes]
+
+
+# -------------------------------------------------
+# Timezone API
+# -------------------------------------------------
+@app.get("/timezone")
+def timezone_lookup(lat: float = Query(...), lon: float = Query(...)):
+    if not _TZF_OK:
+        return {"tz": "UTC", "ok": False, "message": f"timezonefinder missing: {_TZF_ERR}"}
+    try:
+        tz = _TZF.timezone_at(lat=float(lat), lng=float(lon))
+        if not tz:
+            tz = _TZF.closest_timezone_at(lat=float(lat), lng=float(lon))
+        return {"tz": tz or "UTC", "ok": True}
+    except Exception as e:
+        return {"tz": "UTC", "ok": False, "message": str(e)}
+
+
+# -------------------------------------------------
+# Editorial JSON content
+# -------------------------------------------------
+@app.get("/content/utilities.json")
+def serve_utilities_json():
+    file_path = os.path.join("content", "utilities.json")
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return JSONResponse(content=data)
+    except Exception as e:
+        return JSONResponse(status_code=404, content={"error": "utilities.json not found", "message": str(e), "path": file_path})
+
+
 # -------------------------------------------------
 # NASA API (cached)
 # -------------------------------------------------
@@ -389,30 +327,19 @@ def nasa_positions(req: NASAReq):
 
     enriched = []
     moon_lon = None
-
     for p in planets:
         lon = float(p["lon"])
-        # NOTE: nasa endpoint kept as-is (tropical lon). Home uses sidereal.
-        star, sub, subsub = kp_star_sub_sub(lon)
-
+        star, sub, subsub = kp_star_sub_sub(lon)  # legacy (tropical here)
         if p["name"] == "Moon":
             moon_lon = lon
-
         enriched.append({**p, "starLord": star, "subLord": sub, "subSubLord": subsub})
 
     if moon_lon is not None:
         rahu_lon, ketu_lon = calc_rahu_ketu(moon_lon)
         r_star, r_sub, r_ss = kp_star_sub_sub(rahu_lon)
         k_star, k_sub, k_ss = kp_star_sub_sub(ketu_lon)
-
-        enriched.append({
-            "name": "Rahu", "lon": rahu_lon, "lat": 0.0, "dist_au": 0.0, "speed_lon": -0.053,
-            "starLord": r_star, "subLord": r_sub, "subSubLord": r_ss
-        })
-        enriched.append({
-            "name": "Ketu", "lon": ketu_lon, "lat": 0.0, "dist_au": 0.0, "speed_lon": -0.053,
-            "starLord": k_star, "subLord": k_sub, "subSubLord": k_ss
-        })
+        enriched.append({"name":"Rahu","lon":rahu_lon,"lat":0.0,"dist_au":0.0,"speed_lon":-0.053,"starLord":r_star,"subLord":r_sub,"subSubLord":r_ss})
+        enriched.append({"name":"Ketu","lon":ketu_lon,"lat":0.0,"dist_au":0.0,"speed_lon":-0.053,"starLord":k_star,"subLord":k_sub,"subSubLord":k_ss})
 
     out = {"jd_ut": jd_ut, "utc_iso": utc_iso, "planets": enriched}
     _cache_set(f"nasa:{key}", out)
@@ -445,14 +372,7 @@ def astro_panchangam(req: PanchangamReq):
     jd_ut, _ = get_planets_ecliptic(utc_iso, req.lat, req.lon)
     ayan_name = normalize_ayanamsa_name(req.ayanamsa)
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
-
-    return compute_panchangam(
-        datetimeLocal=req.datetimeLocal,
-        tz=req.tz,
-        lat=req.lat,
-        lon=req.lon,
-        ayan_deg=float(ayan),
-    )
+    return compute_panchangam(datetimeLocal=req.datetimeLocal, tz=req.tz, lat=req.lat, lon=req.lon, ayan_deg=float(ayan))
 
 
 # -------------------------------------------------
@@ -478,105 +398,12 @@ def _safe_bool(v: Any, default: bool = False) -> bool:
     except Exception:
         return default
 
-def _build_home_dasha_tree_upto_sukshma(
-    utc_iso: str,
-    jd_ut: float,
-    planets_tropical: List[Dict[str, Any]],
-    ayan_deg: float,
-) -> Dict[str, Any]:
-    moon_trop = None
-    for p in planets_tropical or []:
-        if str(p.get("name", "")).strip().lower() == "moon":
-            moon_trop = float(p.get("lon", 0.0)) % 360.0
-            break
-    if moon_trop is None:
-        return {"tree": []}
-
-    moon_sid = norm360(float(moon_trop) - float(ayan_deg))
-    maha_lord, balance_years = moon_vimshottari_info(moon_sid)
-    balance_years = max(0.0, float(balance_years))
-
-    start_utc = datetime.fromisoformat(utc_iso.replace("Z", "+00:00")).astimezone(timezone.utc)
-
-    maha_list = build_mahadasha_list_120y_9items(
-        start_utc=start_utc,
-        maha_lord=str(maha_lord),
-        maha_balance_years=float(balance_years),
-    ) or []
-
-    maha_nodes: List[Dict[str, Any]] = []
-    for md in maha_list:
-        md_lord = str(md.get("lord") or md.get("planet") or md.get("name") or md.get("key") or "").strip()
-        md_start = str(md.get("start") or md.get("from") or "").strip()
-        md_end = str(md.get("end") or md.get("to") or "").strip()
-
-        node_md: Dict[str, Any] = {"lord": md_lord, "start": md_start, "end": md_end, "bhukti": []}
-
-        try:
-            b_list = build_level_list("bhukti", _iso_to_dt(md_start), _iso_to_dt(md_end), md_lord) or []
-        except Exception:
-            b_list = []
-
-        bhukti_nodes: List[Dict[str, Any]] = []
-        for b in b_list:
-            b_lord = str(b.get("lord") or b.get("planet") or b.get("name") or b.get("key") or "").strip()
-            b_start = str(b.get("start") or b.get("from") or "").strip()
-            b_end = str(b.get("end") or b.get("to") or "").strip()
-            node_b: Dict[str, Any] = {"lord": b_lord, "start": b_start, "end": b_end, "antara": []}
-
-            try:
-                a_list = build_level_list("antara", _iso_to_dt(b_start), _iso_to_dt(b_end), b_lord) or []
-            except Exception:
-                a_list = []
-
-            antara_nodes: List[Dict[str, Any]] = []
-            for a in a_list:
-                a_lord = str(a.get("lord") or a.get("planet") or a.get("name") or a.get("key") or "").strip()
-                a_start = str(a.get("start") or a.get("from") or "").strip()
-                a_end = str(a.get("end") or a.get("to") or "").strip()
-                node_a: Dict[str, Any] = {"lord": a_lord, "start": a_start, "end": a_end, "sukshma": []}
-
-                try:
-                    s_list = build_level_list("sukshma", _iso_to_dt(a_start), _iso_to_dt(a_end), a_lord) or []
-                except Exception:
-                    s_list = []
-
-                suk_nodes: List[Dict[str, Any]] = []
-                for s in s_list:
-                    s_lord = str(s.get("lord") or s.get("planet") or s.get("name") or s.get("key") or "").strip()
-                    s_start = str(s.get("start") or s.get("from") or "").strip()
-                    s_end = str(s.get("end") or s.get("to") or "").strip()
-                    suk_nodes.append({"lord": s_lord, "start": s_start, "end": s_end})
-
-                node_a["sukshma"] = suk_nodes
-                antara_nodes.append(node_a)
-
-            node_b["antara"] = antara_nodes
-            bhukti_nodes.append(node_b)
-
-        node_md["bhukti"] = bhukti_nodes
-        maha_nodes.append(node_md)
-
-    return {
-        "tree": maha_nodes,
-        "meta": {"utc_iso": utc_iso, "jd_ut": jd_ut},
-        "note": "Built in HOME includeDasha=True (Mahadasha→Bhukti→Antara→Sukshma)",
-    }
-
-
 @app.post("/api/astro/home")
 def astro_home(req: HomeReq):
     ayan_name = normalize_ayanamsa_name(req.ayanamsa)
 
     base_key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
-    key = (
-        base_key
-        + f"|D{int(_safe_bool(req.includeDasha, False))}"
-        + f"|OP{int(_safe_bool(req.outerPlanets, False))}"
-        + f"|NM{int(_safe_bool(req.nodeMode, True))}"
-        + f"|H{int(_safe_bool(req.horaryOn, False))}"
-        + f"|HN{int(req.horaryNumber or 1)}"
-    )
+    key = base_key + f"|D{int(_safe_bool(req.includeDasha, False))}|OP{int(_safe_bool(req.outerPlanets, False))}|NM{int(_safe_bool(req.nodeMode, True))}|H{int(_safe_bool(req.horaryOn, False))}|HN{int(req.horaryNumber or 1)}"
 
     cached = _cache_get(f"home:{key}")
     if cached:
@@ -586,10 +413,8 @@ def astro_home(req: HomeReq):
     jd_ut, planets = get_planets_ecliptic(utc_iso, req.lat, req.lon)
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
 
-    # ✅ moonMeta (safe)
     moon_meta = _build_moon_meta(planets_tropical=planets, ayan_deg=float(ayan))
 
-    # --- cusps (trop -> sidereal) ---
     cusps_trop = placidus_cusps(jd_ut, req.lat, req.lon)
     cusps_sid: Dict[str, Any] = {}
     for k, v in cusps_trop.items():
@@ -598,17 +423,14 @@ def astro_home(req: HomeReq):
         except Exception:
             cusps_sid[k] = v
 
-    cusps_sid_map: Dict[int, float] = {}
-    for i in range(1, 13):
-        cusps_sid_map[i] = float(cusps_sid.get(f"house{i}", 0.0))
+    cusps_sid_map: Dict[int, float] = {i: float(cusps_sid.get(f"house{i}", 0.0)) for i in range(1, 13)}
 
     kundali_planets: List[Dict[str, Any]] = []
     kp_graha_table: List[Dict[str, Any]] = []
 
-    # --- planets (sidereal longitudes) ---
     for p in planets:
         name = p["name"]
-        lon_sid = norm360(float(p["lon"]) - ayan)
+        lon_sid = norm360(float(p["lon"]) - float(ayan))
         dms = _abs_to_dms(lon_sid)
 
         g_sign = sign_from_lon_deg(lon_sid)
@@ -616,131 +438,75 @@ def astro_home(req: HomeReq):
         g_sign_lord = SIGN_LORD_BY_SIGN.get(g_sign, "")
         g_house = house_from_lon_and_cusps(lon_sid, cusps_sid_map)
 
-        # ✅ TRUE KP logic (V2) for star/sub/subsub (fixes your Moon case)
         starL, subL, subsubL, nak_idx, nak_name = kp_star_sub_sub_v2(lon_sid)
         nak_lord = NAK_LORDS[int(nak_idx)]
 
-        kundali_planets.append({
-            "planet": name,
-            "longitude": dms,
-            "retro": float(p.get("speed_lon", 0.0)) < 0
-        })
-
+        kundali_planets.append({"planet": name, "longitude": dms, "retro": float(p.get("speed_lon", 0.0)) < 0})
         kp_graha_table.append({
-            "planet": name,
-            "longitude": dms,
-            "retro": float(p.get("speed_lon", 0.0)) < 0,
-
-            "sign": g_sign,
-            "signName": g_sign_name,
-            "signLord": g_sign_lord,
-
+            "planet": name, "longitude": dms, "retro": float(p.get("speed_lon", 0.0)) < 0,
+            "sign": g_sign, "signName": g_sign_name, "signLord": g_sign_lord,
             "house": g_house,
-
-            # ✅ KP (correct)
-            "starLord": starL or "",
-            "subLord": subL or "",
-            "subSubLord": subsubL or "",
-
-            # Nakshatra
-            "nakIndex": int(nak_idx),
-            "nakName": nak_name,
-            "nakLord": nak_lord,
-            "starName": nak_name,
-
-            "signifies": [],
-            "star_signifies": [],
-            "occupies": [g_house],
+            "starLord": starL or "", "subLord": subL or "", "subSubLord": subsubL or "",
+            "nakIndex": int(nak_idx), "nakName": nak_name, "nakLord": nak_lord, "starName": nak_name,
+            "signifies": [], "star_signifies": [], "occupies": [g_house],
         })
 
-    # --- Rahu/Ketu (mean node) sidereal ---
+    # mean node sidereal
     rahu_trop = float(mean_lunar_node_tropical_deg(jd_ut))
     ketu_trop = norm360(rahu_trop + 180.0)
-    rahu_sid = norm360(rahu_trop - ayan)
-    ketu_sid = norm360(ketu_trop - ayan)
+    rahu_sid = norm360(rahu_trop - float(ayan))
+    ketu_sid = norm360(ketu_trop - float(ayan))
 
     for name, lon in [("Rahu", rahu_sid), ("Ketu", ketu_sid)]:
         dms = _abs_to_dms(lon)
-
         g_sign = sign_from_lon_deg(lon)
         g_sign_name = SIGN_NAMES[g_sign]
         g_sign_lord = SIGN_LORD_BY_SIGN.get(g_sign, "")
         g_house = house_from_lon_and_cusps(lon, cusps_sid_map)
 
-        # ✅ TRUE KP logic (V2)
         starL, subL, subsubL, nak_idx, nak_name = kp_star_sub_sub_v2(lon)
         nak_lord = NAK_LORDS[int(nak_idx)]
 
         kundali_planets.append({"planet": name, "longitude": dms, "retro": True})
         kp_graha_table.append({
-            "planet": name,
-            "longitude": dms,
-            "retro": True,
-
-            "sign": g_sign,
-            "signName": g_sign_name,
-            "signLord": g_sign_lord,
-
+            "planet": name, "longitude": dms, "retro": True,
+            "sign": g_sign, "signName": g_sign_name, "signLord": g_sign_lord,
             "house": g_house,
-
-            "starLord": starL or "",
-            "subLord": subL or "",
-            "subSubLord": subsubL or "",
-
-            "nakIndex": int(nak_idx),
-            "nakName": nak_name,
-            "nakLord": nak_lord,
-            "starName": nak_name,
-
-            "signifies": [],
-            "star_signifies": [],
-            "occupies": [g_house],
+            "starLord": starL or "", "subLord": subL or "", "subSubLord": subsubL or "",
+            "nakIndex": int(nak_idx), "nakName": nak_name, "nakLord": nak_lord, "starName": nak_name,
+            "signifies": [], "star_signifies": [], "occupies": [g_house],
         })
 
-    # --- bhava cusps tables (untouched) ---
+    # bhava tables (kept legacy kp_star_sub_sub)
     bhava_cusps: List[Dict[str, Any]] = []
     kp_bhava_table: List[Dict[str, Any]] = []
-
     for i in range(1, 13):
-        house_key = f"house{i}"
-        lon_sid = float(cusps_sid.get(house_key, 0.0))
+        lon_sid = float(cusps_sid.get(f"house{i}", 0.0))
         dms = _abs_to_dms(lon_sid)
-
         sgn = sign_from_lon_deg(lon_sid)
         sgn_lord = SIGN_LORD_BY_SIGN.get(sgn, "")
-
         c_star, c_sub, c_ss = kp_star_sub_sub(lon_sid)
+        bhava_cusps.append({"bhava": i, "longitude": dms, "sign": sgn, "signName": SIGN_NAMES[sgn], "signLord": sgn_lord})
+        kp_bhava_table.append({"bhava": i, "longitude": dms, "sign": sgn, "signName": SIGN_NAMES[sgn], "signLord": sgn_lord, "starLord": c_star or "", "subLord": c_sub or "", "subSubLord": c_ss or ""})
 
-        bhava_cusps.append({
-            "bhava": i,
-            "longitude": dms,
-            "sign": sgn,
-            "signName": SIGN_NAMES[sgn],
-            "signLord": sgn_lord,
-        })
-
-        kp_bhava_table.append({
-            "bhava": i,
-            "longitude": dms,
-            "sign": sgn,
-            "signName": SIGN_NAMES[sgn],
-            "signLord": sgn_lord,
-            "starLord": c_star or "",
-            "subLord": c_sub or "",
-            "subSubLord": c_ss or "",
-        })
-
-    # ✅ If includeDasha=True, build tree
+    # includeDasha (SAFE: no legacy build_level_list)
     dasha_payload = None
     vim_payload = None
     if _safe_bool(req.includeDasha, False):
         try:
-            dasha_payload = _build_home_dasha_tree_upto_sukshma(
-                utc_iso=utc_iso,
-                jd_ut=jd_ut,
-                planets_tropical=planets,
-                ayan_deg=float(ayan),
-            )
+            # compute moon sidereal
+            moon_trop = None
+            for p in planets:
+                if str(p.get("name", "")).strip().lower() == "moon":
+                    moon_trop = float(p.get("lon", 0.0)) % 360.0
+                    break
+            if moon_trop is None:
+                raise ValueError("Moon not found")
+            moon_sid = norm360(moon_trop - float(ayan))
+            maha_lord, balance_years = moon_vimshottari_info(moon_sid)
+            start_utc = _parse_iso_utc(utc_iso)
+            tree = build_vimshottari_tree(start_utc=start_utc, maha_lord=str(maha_lord), maha_balance_years=float(balance_years), max_levels=4)
+            dasha_payload = {"tree": tree, "meta": {"utc_iso": utc_iso, "jd_ut": jd_ut}}
             vim_payload = dasha_payload
         except Exception as e:
             dasha_payload = {"tree": [], "error": str(e)}
@@ -748,21 +514,12 @@ def astro_home(req: HomeReq):
 
     resp = {
         "meta": {
-            "source": "kp-nasa-backend",
-            "utc_iso": utc_iso,
-            "jd_ut": jd_ut,
-            "tz": req.tz,
-            "lat": req.lat,
-            "lon": req.lon,
-            "ayanamsa": ayan_name,
-            "ayanamsaValueDeg": float(ayan),
-            "includeDasha": bool(_safe_bool(req.includeDasha, False)),
+            "source": "kp-nasa-backend", "utc_iso": utc_iso, "jd_ut": jd_ut, "tz": req.tz, "lat": req.lat, "lon": req.lon,
+            "ayanamsa": ayan_name, "ayanamsaValueDeg": float(ayan), "includeDasha": bool(_safe_bool(req.includeDasha, False)),
         },
         "ayanamsa": {"value": float(ayan), "name": ayan_name},
         "ayanamsaValueDeg": float(ayan),
-
         "moonMeta": moon_meta,
-
         "panchangam": None,
         "kundali": {"planets": kundali_planets, "bhavaCusps": bhava_cusps},
         "kp": {"ayanamsa": float(ayan), "grahaTable": kp_graha_table, "bhavaTable": kp_bhava_table},
@@ -776,40 +533,8 @@ def astro_home(req: HomeReq):
 
 
 # -------------------------------------------------
-# LAZY DASHA APIs (FIXED: Correct elapsed/clip logic)
+# LAZY DASHA APIs (elapsed-aware / clipped)
 # -------------------------------------------------
-from pydantic import BaseModel
-from typing import Any, Dict, Optional, List
-from datetime import datetime, timezone
-import time
-
-from app.core.vimshottari_tree import (
-    build_mahadasha_list_120y_9items,
-    build_vimshottari_tree,
-    DASHA_YEARS,
-)
-
-# keep your existing helpers:
-# - local_to_utc_iso
-# - get_planets_ecliptic
-# - normalize_ayanamsa_name
-# - pick_ayanamsa_deg
-# - norm360
-# - moon_vimshottari_info
-# - _make_key
-# - _SESSION
-# - _cache_get / _cache_set
-# - _iso_to_dt (if you want, but not needed below)
-
-def _parse_iso_utc(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
-
-def _years_between_iso(start_iso: str, end_iso: str) -> float:
-    s = _parse_iso_utc(start_iso)
-    e = _parse_iso_utc(end_iso)
-    days = (e - s).total_seconds() / 86400.0
-    return float(days) / 365.2425
-
 class DashaBaseReq(BaseModel):
     datetimeLocal: str
     tz: str
@@ -843,22 +568,9 @@ def _ensure_session(req: DashaBaseReq) -> Dict[str, Any]:
 
     moon_sid = norm360(moon_trop - float(ayan))
     maha_lord, balance_years = moon_vimshottari_info(moon_sid)
-    balance_years = max(0.0, float(balance_years))
-    start_utc = _parse_iso_utc(utc_iso)
 
     key = _make_key(req.datetimeLocal, req.tz, req.lat, req.lon, ayan_name)
-    ses = {
-        "_ts": time.time(),
-        "key": key,
-        "utc_iso": utc_iso,
-        "jd_ut": jd_ut,
-        "ayanamsa": ayan_name,
-        "ayan_deg": float(ayan),
-        "moon_sid": float(moon_sid),
-        "maha_lord": str(maha_lord),
-        "balance_years": float(balance_years),
-        "start_utc": start_utc,
-    }
+    ses = {"_ts": time.time(), "key": key, "utc_iso": utc_iso, "jd_ut": jd_ut, "ayanamsa": ayan_name, "ayan_deg": float(ayan), "moon_sid": float(moon_sid), "maha_lord": str(maha_lord), "balance_years": float(max(0.0, balance_years)), "start_utc": _parse_iso_utc(utc_iso)}
     _SESSION[key] = ses
     return ses
 
@@ -872,234 +584,172 @@ def dasha_maha(req: DashaBaseReq):
         return cached
 
     ses = _SESSION.get(key) or _ensure_session(req)
-
-    maha_list = build_mahadasha_list_120y_9items(
-        start_utc=ses["start_utc"],
-        maha_lord=ses["maha_lord"],
-        maha_balance_years=ses["balance_years"],
-    )
-
-    out = {
-        "meta": {
-            "key": key,
-            "utc_iso": ses["utc_iso"],
-            "jd_ut": ses["jd_ut"],
-            "ayanamsa": ses["ayanamsa"],
-            "ayanamsaValueDeg": ses["ayan_deg"],
-        },
-        "maha": maha_list,
-    }
+    maha_list = build_mahadasha_list_120y_9items(start_utc=ses["start_utc"], maha_lord=ses["maha_lord"], maha_balance_years=ses["balance_years"])
+    out = {"meta": {"key": key, "utc_iso": ses["utc_iso"], "jd_ut": ses["jd_ut"], "ayanamsa": ses["ayanamsa"], "ayanamsaValueDeg": ses["ayan_deg"]}, "maha": maha_list}
     _cache_set(f"maha:{key}", out)
     return out
-
-# ✅ FIXED: Bhukti/Antara/Sukshma/Prana are built from FULL MD schedule then clipped,
-# not by dividing remaining window.
 
 @app.post("/api/dasha/bhukti")
 def dasha_bhukti(req: DashaLevelReq):
     cached = _cache_get(f"bh2:{req.key}:{req.mahaLord}:{req.start}:{req.end}")
     if cached:
         return cached
-
     maha = str(req.mahaLord or "").strip()
     if not maha:
-        raise ValueError("mahaLord required")
-
+        raise HTTPException(status_code=400, detail="mahaLord required")
     rem_years = _years_between_iso(req.start, req.end)
-    tree = build_vimshottari_tree(
-        start_utc=_parse_iso_utc(req.start),
-        maha_lord=maha,
-        maha_balance_years=rem_years,
-        max_levels=2,
-    )
+    tree = build_vimshottari_tree(start_utc=_parse_iso_utc(req.start), maha_lord=maha, maha_balance_years=rem_years, max_levels=2)
     bh = (tree[0] or {}).get("bhukti", []) if tree else []
     out = {"bhukti": bh}
     _cache_set(f"bh2:{req.key}:{maha}:{req.start}:{req.end}", out)
     return out
 
-from fastapi import HTTPException
-
 @app.post("/api/dasha/antara")
 def dasha_antara(req: DashaLevelReq):
-    cached = _cache_get(f"an2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.start}:{req.end}")
-    if cached:
-        return cached
+    try:
+        cached = _cache_get(f"an2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.start}:{req.end}")
+        if cached:
+            return cached
 
-    maha = str(req.mahaLord or "").strip()
-    bh = str(req.bhuktiLord or "").strip()
-    if not maha:
-        raise ValueError("mahaLord required")
-    if not bh:
-        raise ValueError("bhuktiLord required")
+        maha = str(req.mahaLord or "").strip()
+        bh = str(req.bhuktiLord or "").strip()
+        if not maha:
+            raise ValueError("mahaLord required")
+        if not bh:
+            raise ValueError("bhuktiLord required")
 
-    # Parent = Mahadasha FULL window (not remaining)
-    # We reconstruct FULL MD window using remaining years (end-start)
-    rem_years = _years_between_iso(req.start, req.end)
-    md_total_years = float(DASHA_YEARS.get(maha, 0.0))
-    md_total_days = md_total_years * 365.2425
-    md_rem_days = max(0.0, rem_years * 365.2425)
-    md_elapsed_days = max(0.0, md_total_days - md_rem_days)
+        rem_years = _years_between_iso(req.start, req.end)
+        md_total_years = float(DASHA_YEARS.get(maha, 0.0))
+        md_total_days = md_total_years * 365.2425
+        md_rem_days = max(0.0, rem_years * 365.2425)
+        md_elapsed_days = max(0.0, md_total_days - md_rem_days)
 
-    md_clip_start = _parse_iso_utc(req.start)
-    md_clip_end = _parse_iso_utc(req.end)
-    md_full_start = _add_days(md_clip_start, -md_elapsed_days)
-    md_full_end = _add_days(md_full_start, md_total_days)
+        md_clip_start = _parse_iso_utc(req.start)
+        md_clip_end = _parse_iso_utc(req.end)
+        md_full_start = _add_days(md_clip_start, -md_elapsed_days)
+        md_full_end = _add_days(md_full_start, md_total_days)
 
-    # Child FULL window (Bhukti FULL window) inside MD FULL schedule
-    bh_clip_start = _parse_iso_utc(req.start)
-    bh_clip_end = _parse_iso_utc(req.end)
-    bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, bh_clip_start, bh_clip_end)
-    if not bh_full:
-        out = {"antara": []}
+        bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
+        if not bh_full:
+            out = {"antara": []}
+            _cache_set(f"an2:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
+            return out
+
+        bh_full_start, bh_full_end = bh_full
+        an = build_level_list_clipped(level="antara", parent_lord=bh, parent_full_start=bh_full_start, parent_full_end=bh_full_end, clip_start=md_clip_start, clip_end=md_clip_end)
+        out = {"antara": an}
         _cache_set(f"an2:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
         return out
 
-    bh_full_start, bh_full_end = bh_full
-
-    # Build antara based on BHUKTI FULL schedule then clip to [start,end]
-    an = build_level_list_clipped(
-        level="antara",
-        parent_lord=bh,
-        parent_full_start=bh_full_start,
-        parent_full_end=bh_full_end,
-        clip_start=bh_clip_start,
-        clip_end=bh_clip_end,
-    )
-
-    out = {"antara": an}
-    _cache_set(f"an2:{req.key}:{maha}:{bh}:{req.start}:{req.end}", out)
-    return out
-
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"antara error: {e}")
 
 @app.post("/api/dasha/sukshma")
 def dasha_sukshma(req: DashaLevelReq):
-    cached = _cache_get(f"su2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.start}:{req.end}")
-    if cached:
-        return cached
+    try:
+        cached = _cache_get(f"su2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.start}:{req.end}")
+        if cached:
+            return cached
 
-    maha = str(req.mahaLord or "").strip()
-    bh = str(req.bhuktiLord or "").strip()
-    an = str(req.antaraLord or "").strip()
-    if not maha:
-        raise ValueError("mahaLord required")
-    if not bh:
-        raise ValueError("bhuktiLord required")
-    if not an:
-        raise ValueError("antaraLord required")
+        maha = str(req.mahaLord or "").strip()
+        bh = str(req.bhuktiLord or "").strip()
+        an = str(req.antaraLord or "").strip()
+        if not maha:
+            raise ValueError("mahaLord required")
+        if not bh:
+            raise ValueError("bhuktiLord required")
+        if not an:
+            raise ValueError("antaraLord required")
 
-    # Rebuild MD FULL window from remaining
-    rem_years = _years_between_iso(req.start, req.end)
-    md_total_years = float(DASHA_YEARS.get(maha, 0.0))
-    md_total_days = md_total_years * 365.2425
-    md_rem_days = max(0.0, rem_years * 365.2425)
-    md_elapsed_days = max(0.0, md_total_days - md_rem_days)
+        rem_years = _years_between_iso(req.start, req.end)
+        md_total_years = float(DASHA_YEARS.get(maha, 0.0))
+        md_total_days = md_total_years * 365.2425
+        md_rem_days = max(0.0, rem_years * 365.2425)
+        md_elapsed_days = max(0.0, md_total_days - md_rem_days)
 
-    md_clip_start = _parse_iso_utc(req.start)
-    md_clip_end = _parse_iso_utc(req.end)
-    md_full_start = _add_days(md_clip_start, -md_elapsed_days)
-    md_full_end = _add_days(md_full_start, md_total_days)
+        md_clip_start = _parse_iso_utc(req.start)
+        md_clip_end = _parse_iso_utc(req.end)
+        md_full_start = _add_days(md_clip_start, -md_elapsed_days)
+        md_full_end = _add_days(md_full_start, md_total_days)
 
-    # Get BHUKTI FULL window inside MD FULL
-    bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
-    if not bh_full:
-        out = {"sukshma": []}
+        bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
+        if not bh_full:
+            out = {"sukshma": []}
+            _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
+            return out
+        bh_full_start, bh_full_end = bh_full
+
+        an_full = get_child_full_window(bh, bh_full_start, bh_full_end, an, md_clip_start, md_clip_end)
+        if not an_full:
+            out = {"sukshma": []}
+            _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
+            return out
+        an_full_start, an_full_end = an_full
+
+        su = build_level_list_clipped(level="sukshma", parent_lord=an, parent_full_start=an_full_start, parent_full_end=an_full_end, clip_start=md_clip_start, clip_end=md_clip_end)
+        out = {"sukshma": su}
         _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
         return out
-    bh_full_start, bh_full_end = bh_full
 
-    # Get ANTARA FULL window inside BHUKTI FULL
-    an_clip_start = _parse_iso_utc(req.start)
-    an_clip_end = _parse_iso_utc(req.end)
-    an_full = get_child_full_window(bh, bh_full_start, bh_full_end, an, an_clip_start, an_clip_end)
-    if not an_full:
-        out = {"sukshma": []}
-        _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
-        return out
-    an_full_start, an_full_end = an_full
-
-    su = build_level_list_clipped(
-        level="sukshma",
-        parent_lord=an,
-        parent_full_start=an_full_start,
-        parent_full_end=an_full_end,
-        clip_start=an_clip_start,
-        clip_end=an_clip_end,
-    )
-
-    out = {"sukshma": su}
-    _cache_set(f"su2:{req.key}:{maha}:{bh}:{an}:{req.start}:{req.end}", out)
-    return out
-
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"sukshma error: {e}")
 
 @app.post("/api/dasha/prana")
 def dasha_prana(req: DashaLevelReq):
-    cached = _cache_get(f"pr2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.sukshmaLord}:{req.start}:{req.end}")
-    if cached:
-        return cached
+    try:
+        cached = _cache_get(f"pr2:{req.key}:{req.mahaLord}:{req.bhuktiLord}:{req.antaraLord}:{req.sukshmaLord}:{req.start}:{req.end}")
+        if cached:
+            return cached
 
-    maha = str(req.mahaLord or "").strip()
-    bh = str(req.bhuktiLord or "").strip()
-    an = str(req.antaraLord or "").strip()
-    su = str(req.sukshmaLord or "").strip()
-    if not maha:
-        raise ValueError("mahaLord required")
-    if not bh:
-        raise ValueError("bhuktiLord required")
-    if not an:
-        raise ValueError("antaraLord required")
-    if not su:
-        raise ValueError("sukshmaLord required")
+        maha = str(req.mahaLord or "").strip()
+        bh = str(req.bhuktiLord or "").strip()
+        an = str(req.antaraLord or "").strip()
+        su = str(req.sukshmaLord or "").strip()
+        if not maha:
+            raise ValueError("mahaLord required")
+        if not bh:
+            raise ValueError("bhuktiLord required")
+        if not an:
+            raise ValueError("antaraLord required")
+        if not su:
+            raise ValueError("sukshmaLord required")
 
-    # Rebuild MD FULL window from remaining
-    rem_years = _years_between_iso(req.start, req.end)
-    md_total_years = float(DASHA_YEARS.get(maha, 0.0))
-    md_total_days = md_total_years * 365.2425
-    md_rem_days = max(0.0, rem_years * 365.2425)
-    md_elapsed_days = max(0.0, md_total_days - md_rem_days)
+        rem_years = _years_between_iso(req.start, req.end)
+        md_total_years = float(DASHA_YEARS.get(maha, 0.0))
+        md_total_days = md_total_years * 365.2425
+        md_rem_days = max(0.0, rem_years * 365.2425)
+        md_elapsed_days = max(0.0, md_total_days - md_rem_days)
 
-    md_clip_start = _parse_iso_utc(req.start)
-    md_clip_end = _parse_iso_utc(req.end)
-    md_full_start = _add_days(md_clip_start, -md_elapsed_days)
-    md_full_end = _add_days(md_full_start, md_total_days)
+        md_clip_start = _parse_iso_utc(req.start)
+        md_clip_end = _parse_iso_utc(req.end)
+        md_full_start = _add_days(md_clip_start, -md_elapsed_days)
+        md_full_end = _add_days(md_full_start, md_total_days)
 
-    # BHUKTI FULL inside MD FULL
-    bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
-    if not bh_full:
-        out = {"prana": []}
+        bh_full = get_child_full_window(maha, md_full_start, md_full_end, bh, md_clip_start, md_clip_end)
+        if not bh_full:
+            out = {"prana": []}
+            _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+            return out
+        bh_full_start, bh_full_end = bh_full
+
+        an_full = get_child_full_window(bh, bh_full_start, bh_full_end, an, md_clip_start, md_clip_end)
+        if not an_full:
+            out = {"prana": []}
+            _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+            return out
+        an_full_start, an_full_end = an_full
+
+        su_full = get_child_full_window(an, an_full_start, an_full_end, su, md_clip_start, md_clip_end)
+        if not su_full:
+            out = {"prana": []}
+            _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
+            return out
+        su_full_start, su_full_end = su_full
+
+        pr = build_level_list_clipped(level="prana", parent_lord=su, parent_full_start=su_full_start, parent_full_end=su_full_end, clip_start=md_clip_start, clip_end=md_clip_end)
+        out = {"prana": pr}
         _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
         return out
-    bh_full_start, bh_full_end = bh_full
 
-    # ANTARA FULL inside BH FULL
-    an_clip_start = _parse_iso_utc(req.start)
-    an_clip_end = _parse_iso_utc(req.end)
-    an_full = get_child_full_window(bh, bh_full_start, bh_full_end, an, an_clip_start, an_clip_end)
-    if not an_full:
-        out = {"prana": []}
-        _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
-        return out
-    an_full_start, an_full_end = an_full
-
-    # SUKSHMA FULL inside AN FULL
-    su_clip_start = _parse_iso_utc(req.start)
-    su_clip_end = _parse_iso_utc(req.end)
-    su_full = get_child_full_window(an, an_full_start, an_full_end, su, su_clip_start, su_clip_end)
-    if not su_full:
-        out = {"prana": []}
-        _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
-        return out
-    su_full_start, su_full_end = su_full
-
-    pr = build_level_list_clipped(
-        level="prana",
-        parent_lord=su,
-        parent_full_start=su_full_start,
-        parent_full_end=su_full_end,
-        clip_start=su_clip_start,
-        clip_end=su_clip_end,
-    )
-
-    out = {"prana": pr}
-    _cache_set(f"pr2:{req.key}:{maha}:{bh}:{an}:{su}:{req.start}:{req.end}", out)
-    return out
-
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"prana error: {e}")
