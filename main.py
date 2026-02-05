@@ -605,18 +605,39 @@ def dasha_maha(req: DashaBaseReq):
 
 @app.post("/api/dasha/bhukti")
 def dasha_bhukti(req: DashaLevelReq):
-    cached = _cache_get(f"bh2:{req.key}:{req.mahaLord}:{req.start}:{req.end}")
-    if cached:
-        return cached
-    maha = str(req.mahaLord or "").strip()
-    if not maha:
-        raise HTTPException(status_code=400, detail="mahaLord required")
-    rem_years = _years_between_iso(req.start, req.end)
-    tree = build_vimshottari_tree(start_utc=_parse_iso_utc(req.start), maha_lord=maha, maha_balance_years=rem_years, max_levels=2)
-    bh = (tree[0] or {}).get("bhukti", []) if tree else []
-    out = {"bhukti": bh}
-    _cache_set(f"bh2:{req.key}:{maha}:{req.start}:{req.end}", out)
-    return out
+    try:
+        cached = _cache_get(f"bh3:{req.key}:{req.mahaLord}:{req.start}:{req.end}")
+        if cached:
+            return cached
+
+        maha = str(req.mahaLord or "").strip()
+        if not maha:
+            raise HTTPException(status_code=400, detail="mahaLord required")
+
+        # clip window = MD remaining window (UI sends this)
+        md_clip_s = _iso_to_dt(req.start)
+        md_clip_e = _iso_to_dt(req.end)
+
+        # ✅ full MD window from cached /maha
+        _, _, md_full_s, md_full_e = _md_full_window_from_cached_maha(req.key, maha)
+
+        # ✅ build FULL bhukti schedule over FULL MD, then clip to (max(NOW, md_clip_s) .. md_clip_e)
+        bh_list = build_level_list_clipped(
+            "bhukti",
+            maha,
+            md_full_s,
+            md_full_e,
+            md_clip_s,
+            md_clip_e,
+        )
+
+        out = {"bhukti": bh_list}
+        _cache_set(f"bh3:{req.key}:{maha}:{req.start}:{req.end}", out)
+        return out
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"bhukti error: {e}")
+
 
 # ---------- ✅ NEW HELPERS (use cached /maha list as truth) ----------
 def _days_of_years(y: float) -> float:
