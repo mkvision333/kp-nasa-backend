@@ -104,15 +104,41 @@ def _bucket_datetimeLocal(dt_local: str, bucket_sec: int = 60) -> str:
         return dt_local
 
 def normalize_ayanamsa_name(v: Optional[str]) -> str:
-    s = str(v or "KP").strip().upper()
-    if s in ["LAHIRI", "L"]:
-        return "LAHIRI"
-    return "KP"
+    """
+    Normalize incoming ayanamsa names from API / frontend.
 
-def pick_ayanamsa_deg(jd_ut: float, ayanamsa_name: str) -> float:
-    if ayanamsa_name == "LAHIRI":
-        return float(get_ayanamsa_deg(jd_ut, "LAHIRI"))
-    return float(get_ayanamsa_deg(jd_ut, "KP"))
+    Supported (case-insensitive):
+      - LAHIRI
+      - KP
+      - KP_OLD
+      - KP_NEW
+
+    Aliases:
+      - "KPO"  -> KP_OLD
+      - "KPN"  -> KP_NEW
+      - "KRISHNAMURTI" -> KP_OLD
+    """
+    s = str(v or "KP_OLD").strip().upper()
+
+    if s in ("LAHIRI", "CHITRAPAKSHA", "L"):
+        return "LAHIRI"
+
+    if s in ("KP_NEW", "KPN", "VP291", "SENTHILATHIBAN"):
+        return "KP_NEW"
+
+    if s in ("KP", "KP_OLD", "KPO", "KRISHNAMURTI"):
+        return "KP_OLD"
+
+    # fallback (safe default)
+    return "KP_OLD"
+
+
+def pick_ayanamsa_deg(jd_ut: float, ayanamsa_name: Optional[str]) -> float:
+    """
+    Single gateway used everywhere in backend.
+    """
+    mode = normalize_ayanamsa_name(ayanamsa_name)
+    return float(get_ayanamsa_deg(jd_ut, mode))
 
 def _make_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayanamsa: str) -> str:
     dtb = _bucket_datetimeLocal(datetimeLocal, 60)
