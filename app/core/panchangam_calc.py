@@ -348,11 +348,17 @@ def _ayana_from_sun_rashi(r: int) -> str:
     return "Uttarayana" if r in (9, 10, 11, 0, 1, 2) else "Dakshinayana"
 
 def _ritu_from_sun_rashi(r: int) -> str:
-    if r in (0, 1):  return "Vasanta"
-    if r in (2, 3):  return "Grishma"
-    if r in (4, 5):  return "Varsha"
-    if r in (6, 7):  return "Sharad"
-    if r in (8, 9):  return "Hemanta"
+    # 11: Meena, 0: Mesha -> Vasanta
+    if r in (11, 0):  return "Vasanta"
+    # 1: Vrishabha, 2: Mithuna -> Grishma
+    if r in (1, 2):   return "Grishma"
+    # 3: Karka, 4: Simha -> Varsha
+    if r in (3, 4):   return "Varsha"
+    # 5: Kanya, 6: Tula -> Sharad
+    if r in (5, 6):   return "Sharad"
+    # 7: Vrischika, 8: Dhanus -> Hemanta
+    if r in (7, 8):   return "Hemanta"
+    # 9: Makara, 10: Kumbha -> Shishira
     return "Shishira"
 
 def _approx_shaka_year(dt_local: datetime) -> int:
@@ -649,7 +655,7 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
             "yoga": {"name": yoga_name, "end_local": fmt_local(yoga_end_local), "end_hms": fmt_hm(yoga_end_local)},
             "karana": {"name": kar_name, "end_local": fmt_local(kar_end_local), "end_hms": fmt_hm(kar_end_local)},
 
-            "note": "Fast Panchangam v2: NOAA sunrise/sunset (stable) + NASA lon (memo + 2–4 calls). Varjya=nak ghati; Amrit/Shubh=choghadiya."
+           
         }
 
         _cache_set(key, out)
