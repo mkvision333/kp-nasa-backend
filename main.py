@@ -54,6 +54,9 @@ from app.core.vimshottari_tree import (
 )
 
 from app.core.panchangam_calc import compute_panchangam
+from app.routes.lagna_kalam_route import router as lagna_kalam_router
+app.include_router(lagna_kalam_router)
+
 
 
 # -------------------------------------------------
