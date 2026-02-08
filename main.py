@@ -54,10 +54,6 @@ from app.core.vimshottari_tree import (
 )
 
 from app.core.panchangam_calc import compute_panchangam
-from app.routes.lagna_kalam_route import router as lagna_kalam_router
-app.include_router(lagna_kalam_router)
-
-
 
 # -------------------------------------------------
 # App
@@ -65,7 +61,8 @@ app.include_router(lagna_kalam_router)
 app = FastAPI(title="KP NASA Backend", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-
+from app.routes.lagna_kalam_route import router as lagna_kalam_router
+app.include_router(lagna_kalam_router)
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
