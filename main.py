@@ -400,7 +400,78 @@ def astro_panchangam(req: PanchangamReq):
     ayan = pick_ayanamsa_deg(jd_ut, ayan_name)
     return compute_panchangam(datetimeLocal=req.datetimeLocal, tz=req.tz, lat=req.lat, lon=req.lon, ayan_deg=float(ayan))
 
+# =========================================================
+# ✅ NEW: PANCHANGAM MONTH BATCH API (ONE CALL = WHOLE MONTH)
+# =========================================================
 
+class PanchangamMonthReq(BaseModel):
+    year: int          # 2026
+    month: int         # 1..12
+    tz: str
+    lat: float
+    lon: float
+    ayanamsa: Optional[str] = "KP"
+
+class PanchangamMonthDay(BaseModel):
+    date: str          # YYYY-MM-DD
+    data: Dict[str, Any]
+
+class PanchangamMonthResp(BaseModel):
+    year: int
+    month: int
+    days: List[PanchangamMonthDay]
+    errors: List[Dict[str, str]]
+
+def _days_in_month(y: int, m: int) -> int:
+    if m == 12:
+        return (date(y + 1, 1, 1) - date(y, m, 1)).days
+    return (date(y, m + 1, 1) - date(y, m, 1)).days
+
+@app.post("/api/astro/panchangam_month", response_model=PanchangamMonthResp)
+def astro_panchangam_month(req: PanchangamMonthReq):
+
+    if req.month < 1 or req.month > 12:
+        raise HTTPException(status_code=400, detail="month must be 1..12")
+
+    total_days = _days_in_month(req.year, req.month)
+    out_days: List[PanchangamMonthDay] = []
+    errors: List[Dict[str, str]] = []
+
+    for d in range(1, total_days + 1):
+        date_key = f"{req.year:04d}-{req.month:02d}-{d:02d}"
+        cache_key = f"month:{date_key}:{req.tz}:{req.lat:.4f}:{req.lon:.4f}:{req.ayanamsa}"
+
+        cached = _cache_get(cache_key)
+        if cached:
+            out_days.append(PanchangamMonthDay(date=date_key, data=cached))
+            continue
+
+        try:
+            datetime_local = f"{date_key}T12:00:00"
+            utc_iso = local_to_utc_iso(datetime_local, req.tz)
+            jd_ut, _ = get_planets_ecliptic(utc_iso, req.lat, req.lon)
+            ayan = pick_ayanamsa_deg(jd_ut, req.ayanamsa)
+
+            data = compute_panchangam(
+                datetimeLocal=datetime_local,
+                tz=req.tz,
+                lat=req.lat,
+                lon=req.lon,
+                ayan_deg=float(ayan),
+            )
+
+            _cache_set(cache_key, data)
+            out_days.append(PanchangamMonthDay(date=date_key, data=data))
+
+        except Exception as e:
+            errors.append({"date": date_key, "error": str(e)})
+
+    return PanchangamMonthResp(
+        year=req.year,
+        month=req.month,
+        days=out_days,
+        errors=errors,
+    )
 # -------------------------------------------------
 # HOME API (cached)
 # -------------------------------------------------
