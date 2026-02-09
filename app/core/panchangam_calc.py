@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone, date
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Dict, Any, Tuple, List
 import math
 import time
 
@@ -370,22 +370,99 @@ def _refine_once(fetch_sid, t_est: datetime, target_fn, target: float, t0: datet
     return _estimate_crossing_time(a, va, b, vb, target)
 
 # ---------------------------
-# ✅ Adhika / Nija Masa detection (Amavasya->Amavasya, Sun rashi change?)
+# ✅ Amavasya finder (stable)  <-- NEW
 # ---------------------------
-def _clamp_dt(x: datetime, lo: datetime, hi: datetime) -> datetime:
-    if x < lo: return lo
-    if x > hi: return hi
-    return x
+def _unwrap_near(v: float, ref: float) -> float:
+    """Shift v by ±360 so it's closest to ref."""
+    v = float(v)
+    ref = float(ref)
+    while (v - ref) > 180.0:
+        v -= 360.0
+    while (v - ref) < -180.0:
+        v += 360.0
+    return v
 
+def _phase_unwrapped(fetch_sid, t_utc: datetime, ref: float, force_dir: str | None = None) -> float:
+    """Moon-Sun phase in degrees, unwrapped near ref."""
+    s, m = fetch_sid(t_utc)
+    raw = wrap360(m - s)  # 0..360
+    v = _unwrap_near(raw, ref)
+    if force_dir == "back" and v > ref:
+        v -= 360.0
+    if force_dir == "forward" and v < ref:
+        v += 360.0
+    return v
+
+def _binary_crossing(fetch_sid, t_lo: datetime, p_lo: float, t_hi: datetime, p_hi: float, target: float) -> datetime:
+    """Assumes p_lo <= target <= p_hi."""
+    lo_t, hi_t = t_lo, t_hi
+    lo_p, hi_p = p_lo, p_hi
+    for _ in range(40):
+        if (hi_t - lo_t).total_seconds() <= 1:
+            return hi_t
+        mid = lo_t + (hi_t - lo_t) / 2
+        p_mid = _phase_unwrapped(fetch_sid, mid, (lo_p + hi_p) / 2.0)
+        if p_mid < target:
+            lo_t, lo_p = mid, p_mid
+        else:
+            hi_t, hi_p = mid, p_mid
+    return hi_t
+
+def _find_last_next_amavasya(fetch_sid, t0: datetime) -> tuple[datetime, datetime]:
+    """
+    Find last & next amavasya around t0 using phase(Moon-Sun) crossing.
+    last: phase crosses 0 going backward
+    next: phase crosses 360 going forward
+    """
+    s0, m0 = fetch_sid(t0)
+    p0 = wrap360(m0 - s0)  # 0..360
+
+    # --- last amavasya (target 0) ---
+    t_hi = t0
+    p_hi = float(p0)
+    found_last = False
+    for d in range(1, 40):
+        t_lo = t0 - timedelta(days=d)
+        p_lo = _phase_unwrapped(fetch_sid, t_lo, p_hi, force_dir="back")
+        if p_lo <= 0.0 <= p_hi:
+            found_last = True
+            last_am = _binary_crossing(fetch_sid, t_lo, p_lo, t_hi, p_hi, target=0.0)
+            break
+        t_hi, p_hi = t_lo, p_lo
+
+    if not found_last:
+        last_am = t0 - timedelta(days=15)
+
+    # --- next amavasya (target 360) ---
+    t_lo2 = t0
+    p_lo2 = float(p0)
+    found_next = False
+    for d in range(1, 40):
+        t_hi2 = t0 + timedelta(days=d)
+        p_hi2 = _phase_unwrapped(fetch_sid, t_hi2, p_lo2, force_dir="forward")
+        if p_lo2 <= 360.0 <= p_hi2:
+            found_next = True
+            next_am = _binary_crossing(fetch_sid, t_lo2, p_lo2, t_hi2, p_hi2, target=360.0)
+            break
+        t_lo2, p_lo2 = t_hi2, p_hi2
+
+    if not found_next:
+        next_am = t0 + timedelta(days=15)
+
+    return last_am, next_am
+
+# ---------------------------
+# ✅ Adhika / Nija Masa detection (Amavasya->Amavasya)
+# ---------------------------
 def _masa_name_from_sun_sid(sun_sid: float) -> str:
     return LUNAR_MONTH_BY_SUN_RASHI.get(_sun_rashi(sun_sid), "—")
 
-def _detect_masa_flags(fetch_sid, prev_am_utc: datetime, next_am_utc: datetime) -> Tuple[bool, bool]:
+def _detect_adhika_kshaya(fetch_sid, prev_am_utc: datetime, next_am_utc: datetime) -> Tuple[bool, bool]:
     """
     Returns: (adhika_masa, kshaya_masa)
-    ✅ Classic rule:
-      - Adhika: no Sun rashi change inside lunar month => rashi(prev_am) == rashi(next_am)
-      - Kshaya: (rare) two sankrantis within one lunar month (not fully computed here) => keep False for now
+    ✅ Rule:
+      - Adhika: rashi(prev_am) == rashi(next_am)
+      - Kshaya: not computed here (rare) => False
     """
     sun_a, _ = fetch_sid(prev_am_utc)
     sun_b, _ = fetch_sid(next_am_utc)
@@ -568,50 +645,29 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         ayana = _ayana_from_sun_rashi(sun_r)
 
         # ----------------------------
-        # ✅ Masa + Adhika/Nija (NEW)
+        # ✅ Masa + Adhika/Nija (STABLE by real Amavasya bounds)
         # ----------------------------
-        # Estimate "prev amavasya" from d0 + rate
-        d_rate = (d1u - d0) / max(1.0, (next_sunrise_utc - sunrise_utc).total_seconds())
-        if abs(d_rate) > 1e-9:
-            prev_am_utc = sunrise_utc - timedelta(seconds=float(d0 / d_rate))
-        else:
-            prev_am_utc = sunrise_utc - timedelta(days=15)
+        last_am_utc, next_am_utc = _find_last_next_amavasya(fetch_sid, sunrise_utc)
 
-        if prev_am_utc < sunrise_utc - timedelta(days=35):
-            prev_am_utc = sunrise_utc - timedelta(days=15)
+        sun_last_am, _ = fetch_sid(last_am_utc)
+        sun_next_am, _ = fetch_sid(next_am_utc)
 
-        # Estimate "next amavasya" from d0 + rate (target = 360)
-        if abs(d_rate) > 1e-9:
-            sec_to_next_am = float((360.0 - d0) / d_rate)
-            next_am_utc = sunrise_utc + timedelta(seconds=sec_to_next_am)
-        else:
-            next_am_utc = sunrise_utc + timedelta(days=15)
+        masa_name = _masa_name_from_sun_sid(sun_last_am)
+        next_masa_name = _masa_name_from_sun_sid(sun_next_am)
 
-        # sanity clamp
-        next_am_utc = _clamp_dt(next_am_utc, sunrise_utc, sunrise_utc + timedelta(days=40))
+        adhika_masa = (masa_name == next_masa_name)
 
-        # month name from Sun at prev amavasya
-        sun_prev_am, _ = fetch_sid(prev_am_utc)
-        masa_name = _masa_name_from_sun_sid(sun_prev_am)
+        # previous lunation (for NIJA detection)
+        prevprev_am_utc, _ = _find_last_next_amavasya(fetch_sid, last_am_utc - timedelta(hours=1))
+        sun_prevprev_am, _ = fetch_sid(prevprev_am_utc)
+        prev_masa_name = _masa_name_from_sun_sid(sun_prevprev_am)
 
-        # adhika/kshaya for current month
-        adhika_masa, kshaya_masa = _detect_masa_flags(fetch_sid, prev_am_utc, next_am_utc)
+        # If previous lunation was adhika and current repeats same masa_name, mark NIJA
+        prev_adhika, _ = _detect_adhika_kshaya(fetch_sid, prevprev_am_utc, last_am_utc)
+        nija_masa = (not adhika_masa) and prev_adhika and (prev_masa_name == masa_name)
 
-        # detect Nija (when previous month was adhika and same masa_name repeats)
-        nija_masa = False
-        if (not adhika_masa) and (not kshaya_masa) and abs(d_rate) > 1e-9:
-            # previous-previous amavasya approx one synodic month earlier
-            sec_one_month = float(360.0 / d_rate)  # seconds for 360° tithi cycle
-            prev_prev_am_utc = prev_am_utc - timedelta(seconds=sec_one_month)
-            prev_prev_am_utc = _clamp_dt(prev_prev_am_utc, prev_am_utc - timedelta(days=40), prev_am_utc - timedelta(days=20))
-
-            sun_prev_prev_am, _ = fetch_sid(prev_prev_am_utc)
-            prev_masa_name = _masa_name_from_sun_sid(sun_prev_prev_am)
-
-            prev_adhika, _ = _detect_masa_flags(fetch_sid, prev_prev_am_utc, prev_am_utc)
-
-            if prev_adhika and (prev_masa_name == masa_name):
-                nija_masa = True
+        # (kshaya not computed)
+        kshaya_masa = False
 
         if kshaya_masa:
             masa_type = "KSHAYA"
@@ -637,10 +693,10 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
             "vaara": vaara,
 
             "masa_name": masa_name,
-            "masa_type": masa_type,          # ✅ NEW (ADHIKA/NIJA/NORMAL/KSHAYA)
-            "masa_display": masa_display,    # ✅ NEW (pre-formatted)
+            "masa_type": masa_type,          # ADHIKA/NIJA/NORMAL/KSHAYA
+            "masa_display": masa_display,    # pre-formatted
             "adhika_masa": bool(adhika_masa),
-            "nija_masa": bool(nija_masa),    # ✅ NEW
+            "nija_masa": bool(nija_masa),
             "kshaya_masa": bool(kshaya_masa),
 
             "paksha": paksha,
