@@ -92,7 +92,6 @@ LUNAR_MONTH_BY_SUN_RASHI = {
 }
 
 # ✅ Varjya (Nakshatra Thyajyam) ghati ranges (0..60 ghatis)
-# commonly used mapping (startGhati, endGhati)
 _VARJYA_GHATI: List[Tuple[int, int]] = [
     (51,54), (25,28), (31,34), (41,44), (15,18), (22,25), (31,34), (21,24), (33,36),
     (31,34), (21,24), (19,22), (22,25), (21,24), (15,18), (15,18), (11,14), (15,18),
@@ -114,7 +113,7 @@ DAY_CHOGH: Dict[str, List[str]] = {
 # Cache (server-side)
 # ---------------------------
 _PANCH_CACHE: Dict[str, Dict[str, Any]] = {}
-_PANCH_TTL_SEC = 12 * 60 * 60  # 12 hours (more stable, fewer cold misses)
+_PANCH_TTL_SEC = 12 * 60 * 60  # 12 hours
 
 def _panch_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayan_deg: float) -> str:
     try:
@@ -143,9 +142,6 @@ def wrap360(x: float) -> float:
     return x if x >= 0 else x + 360.0
 
 def unwrap_forward(v1: float, v0: float) -> float:
-    """
-    unwrap v1 near v0 (forward continuity)
-    """
     d = v1 - v0
     if d < -180:
         return v1 + 360.0
@@ -188,11 +184,9 @@ def _durmuhurta_spans(sunrise_utc: datetime, sunset_utc: datetime, vaara: str) -
     return out
 
 # ---------------------------
-# ✅ NOAA Solar Calculator style sunrise/sunset (accurate, stable)
-# References: NOAA ESRL algorithm (common implementations)
+# ✅ NOAA Solar Calculator style sunrise/sunset
 # ---------------------------
 def _julian_day_0h_utc(d: date) -> float:
-    # Julian day at 0h UTC
     y = d.year
     m = d.month
     day = d.day
@@ -205,38 +199,26 @@ def _julian_day_0h_utc(d: date) -> float:
     return JD
 
 def _sun_decl_and_eqtime(jd: float) -> Tuple[float, float]:
-    """
-    returns (declination_radians, equation_of_time_minutes)
-    """
     T = (jd - 2451545.0) / 36525.0
-    # Geom Mean Long Sun (deg)
     L0 = (280.46646 + T * (36000.76983 + T * 0.0003032)) % 360.0
-    # Geom Mean Anom Sun (deg)
     M = 357.52911 + T * (35999.05029 - 0.0001537 * T)
     Mrad = math.radians(M)
-    # Eccent Earth Orbit
     e = 0.016708634 - T * (0.000042037 + 0.0000001267 * T)
-    # Sun Eq of Ctr
     C = (math.sin(Mrad) * (1.914602 - T * (0.004817 + 0.000014 * T))
          + math.sin(2 * Mrad) * (0.019993 - 0.000101 * T)
          + math.sin(3 * Mrad) * 0.000289)
-    # Sun True Long (deg)
     true_long = L0 + C
-    # Sun App Long (deg)
     omega = 125.04 - 1934.136 * T
     lam = true_long - 0.00569 - 0.00478 * math.sin(math.radians(omega))
     lamr = math.radians(lam)
 
-    # Mean obliquity
     eps0 = 23.0 + (26.0 + ((21.448 - T*(46.815 + T*(0.00059 - T*0.001813))))/60.0)/60.0
     eps = eps0 + 0.00256 * math.cos(math.radians(omega))
     epsr = math.radians(eps)
 
-    # declination
     sin_dec = math.sin(epsr) * math.sin(lamr)
     dec = math.asin(sin_dec)
 
-    # equation of time
     y = math.tan(epsr/2.0)**2
     L0r = math.radians(L0)
     Etime = 4.0 * math.degrees(
@@ -246,32 +228,23 @@ def _sun_decl_and_eqtime(jd: float) -> Tuple[float, float]:
         - 0.5*y*y*math.sin(4.0*L0r)
         - 1.25*e*e*math.sin(2.0*Mrad)
     )
-    return dec, Etime  # dec rad, eqtime minutes
+    return dec, Etime
 
 def _sunrise_sunset_utc_for_local_date(local_d: date, tz: str, lat: float, lon: float) -> Tuple[datetime, datetime]:
-    """
-    Returns sunrise_utc, sunset_utc for the given LOCAL date.
-    lon: East positive (India positive) ✅
-    """
     zone = ZoneInfo(tz)
-    # local date midnight -> find corresponding UTC date for JD base
-    # We'll use local noon to anchor day properly, but compute JD at UTC 0h of that UTC date
     local_noon = datetime(local_d.year, local_d.month, local_d.day, 12, 0, 0, tzinfo=zone)
     utc_noon = local_noon.astimezone(timezone.utc)
     jd0 = _julian_day_0h_utc(utc_noon.date())
 
     dec, eq_time = _sun_decl_and_eqtime(jd0)
 
-    # solar zenith for official sunrise/sunset
     zenith = math.radians(90.833)
     latr = math.radians(lat)
 
     cos_ha = (math.cos(zenith) - math.sin(latr)*math.sin(dec)) / (math.cos(latr)*math.cos(dec))
     cos_ha = max(-1.0, min(1.0, cos_ha))
-    ha = math.degrees(math.acos(cos_ha))  # degrees
+    ha = math.degrees(math.acos(cos_ha))
 
-    # NOAA: solar noon (minutes) from 0h UTC
-    # lon east positive => solarNoon = 720 - 4*lon - eqTime
     solar_noon_min = 720.0 - 4.0*float(lon) - float(eq_time)
     sunrise_min = solar_noon_min - 4.0*ha
     sunset_min = solar_noon_min + 4.0*ha
@@ -280,9 +253,7 @@ def _sunrise_sunset_utc_for_local_date(local_d: date, tz: str, lat: float, lon: 
     sunrise_utc = base + timedelta(minutes=float(sunrise_min))
     sunset_utc = base + timedelta(minutes=float(sunset_min))
 
-    # force to intended local date (prevents date mismatch)
     if sunrise_utc.astimezone(zone).date() != local_d:
-        # adjust by ±1 day if necessary
         if sunrise_utc.astimezone(zone).date() < local_d:
             sunrise_utc += timedelta(days=1)
         else:
@@ -294,7 +265,6 @@ def _sunrise_sunset_utc_for_local_date(local_d: date, tz: str, lat: float, lon: 
         else:
             sunset_utc -= timedelta(days=1)
 
-    # sanity
     if sunset_utc <= sunrise_utc:
         local_mid = datetime(local_d.year, local_d.month, local_d.day, 0, 0, 0, tzinfo=zone)
         sunrise_utc = local_mid.replace(hour=6).astimezone(timezone.utc)
@@ -309,7 +279,6 @@ def _make_nasa_fetcher(lat: float, lon: float, ayan_deg: float):
     memo: Dict[str, Tuple[float, float]] = {}
 
     def sun_moon_sid(dt_utc: datetime) -> Tuple[float, float]:
-        # cache key: minute-level ISO
         k = dt_utc.replace(second=0, microsecond=0, tzinfo=timezone.utc).isoformat()
         if k in memo:
             return memo[k]
@@ -327,7 +296,6 @@ def _make_nasa_fetcher(lat: float, lon: float, ayan_deg: float):
                 moon_t = float(p.get("lon", 0.0))
 
         if sun_t is None or moon_t is None:
-            # very defensive fallback ordering
             sun_t = float(planets[0].get("lon", 0.0))
             moon_t = float(planets[1].get("lon", 0.0))
 
@@ -348,17 +316,11 @@ def _ayana_from_sun_rashi(r: int) -> str:
     return "Uttarayana" if r in (9, 10, 11, 0, 1, 2) else "Dakshinayana"
 
 def _ritu_from_sun_rashi(r: int) -> str:
-    # 11: Meena, 0: Mesha -> Vasanta
     if r in (11, 0):  return "Vasanta"
-    # 1: Vrishabha, 2: Mithuna -> Grishma
     if r in (1, 2):   return "Grishma"
-    # 3: Karka, 4: Simha -> Varsha
     if r in (3, 4):   return "Varsha"
-    # 5: Kanya, 6: Tula -> Sharad
     if r in (5, 6):   return "Sharad"
-    # 7: Vrischika, 8: Dhanus -> Hemanta
     if r in (7, 8):   return "Hemanta"
-    # 9: Makara, 10: Kumbha -> Shishira
     return "Shishira"
 
 def _approx_shaka_year(dt_local: datetime) -> int:
@@ -373,7 +335,6 @@ def _approx_vikrama_year(dt_local: datetime) -> int:
         return y + 57
     return y + 56
 
-# calibrated offset
 _SAMVATSARA_VIKRAMA_OFFSET = -3
 
 def _samvatsara_from_vikrama(vikrama_year: int) -> Tuple[str, str]:
@@ -381,17 +342,13 @@ def _samvatsara_from_vikrama(vikrama_year: int) -> Tuple[str, str]:
     return SAMVATSARA_60[idx], SAMVATSARA_60_TE[idx]
 
 # ---------------------------
-# Ultra-fast end-time estimation (2–4 NASA calls total)
+# Ultra-fast end-time estimation
 # ---------------------------
 def _estimate_crossing_time(
     t0: datetime, v0: float,
     t1: datetime, v1: float,
     target: float
 ) -> datetime:
-    """
-    Linear interpolation (v0->v1) for target.
-    Assumes target between v0..v1.
-    """
     dt = (t1 - t0).total_seconds()
     if dt <= 0:
         return t1
@@ -403,23 +360,40 @@ def _estimate_crossing_time(
     return t0 + timedelta(seconds=dt * frac)
 
 def _refine_once(fetch_sid, t_est: datetime, target_fn, target: float, t0: datetime, t1: datetime) -> datetime:
-    """
-    One refinement using 2 sample points around estimate (still cheap due to memo)
-    """
-    # small bracket
     a = max(t0, t_est - timedelta(hours=2))
     b = min(t1, t_est + timedelta(hours=2))
     va = target_fn(fetch_sid, a)
     vb = target_fn(fetch_sid, b)
-
-    # unwrap monotonic
     vb = unwrap_forward(vb, va)
-
-    # if bracket bad, return estimate
     if (target < min(va, vb)) or (target > max(va, vb)):
         return t_est
-
     return _estimate_crossing_time(a, va, b, vb, target)
+
+# ---------------------------
+# ✅ Adhika / Nija Masa detection (Amavasya->Amavasya, Sun rashi change?)
+# ---------------------------
+def _clamp_dt(x: datetime, lo: datetime, hi: datetime) -> datetime:
+    if x < lo: return lo
+    if x > hi: return hi
+    return x
+
+def _masa_name_from_sun_sid(sun_sid: float) -> str:
+    return LUNAR_MONTH_BY_SUN_RASHI.get(_sun_rashi(sun_sid), "—")
+
+def _detect_masa_flags(fetch_sid, prev_am_utc: datetime, next_am_utc: datetime) -> Tuple[bool, bool]:
+    """
+    Returns: (adhika_masa, kshaya_masa)
+    ✅ Classic rule:
+      - Adhika: no Sun rashi change inside lunar month => rashi(prev_am) == rashi(next_am)
+      - Kshaya: (rare) two sankrantis within one lunar month (not fully computed here) => keep False for now
+    """
+    sun_a, _ = fetch_sid(prev_am_utc)
+    sun_b, _ = fetch_sid(next_am_utc)
+    rA = _sun_rashi(sun_a)
+    rB = _sun_rashi(sun_b)
+    adhika = (rA == rB)
+    kshaya = False
+    return adhika, kshaya
 
 # ---------------------------
 # MAIN
@@ -475,7 +449,6 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
     amrita_ghadiya = [_fmt_span(zone, a, b) for (a, b) in amrita_sp]
     shubha_ghadiya = [_fmt_span(zone, a, b) for (a, b) in shubha_sp]
 
-    # NASA computations (very few calls)
     note_extra = ""
     try:
         fetch_sid = _make_nasa_fetcher(float(lat), float(lon), float(ayan_deg))
@@ -489,7 +462,7 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         moon1u = unwrap_forward(moon1, moon0)
 
         # derived angles at sunrise and +24h
-        d0 = wrap360(moon0 - sun0)
+        d0 = wrap360(moon0 - sun0)  # Moon-Sun angle (0..360)
         d1 = wrap360(moon1 - sun1)
         d1u = unwrap_forward(d1, d0)
 
@@ -502,11 +475,9 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         tithi_name = TITHI_NAMES[(tithi_idx - 1) % 30]
         paksha = "Shukla" if 1 <= tithi_idx <= 15 else "Krishna"
         tithi_target = (math.floor(d0 / TITHI_SPAN) + 1) * TITHI_SPAN
-
-        # ensure target is forward in unwrapped space
         if tithi_target <= d0:
             tithi_target += TITHI_SPAN
-        # estimate using 24h line
+
         tithi_end_utc = _estimate_crossing_time(sunrise_utc, d0, next_sunrise_utc, d1u, tithi_target)
 
         def tithi_fn(fetch, t):
@@ -568,23 +539,14 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         kar_end_utc = _refine_once(fetch_sid, kar_end_utc, tithi_fn, kar_target, sunrise_utc, next_sunrise_utc)
         kar_end_local = kar_end_utc.astimezone(zone)
 
-        # ---- Varjya from Nakshatra duration (ghati mapping) ----
-        # Need nakshatra start boundary:
+        # ---- Varjya from Nakshatra duration ----
         nak_start_boundary = math.floor(moon0 / STAR_SPAN) * STAR_SPAN
-
-        # estimate nak start by going backwards using same 24h slope
-        # compute moon at sunrise-24h
         prev_sunrise_utc = sunrise_utc - timedelta(days=1)
         _, moon_prev = fetch_sid(prev_sunrise_utc)
-        moon_prev_u = unwrap_forward(moon0, moon_prev)  # unwrap prev near current
-        # For backward use: treat interval prev->current
-        # make both unwrapped in increasing order
         m_prev = moon_prev
         m_cur = moon0
-        # try to ensure m_cur is unwrapped forward from m_prev
         m_cur_u = unwrap_forward(m_cur, m_prev)
 
-        # If boundary isn't inside, fallback: use sunrise as start (safe)
         nak_start_utc = sunrise_utc
         if nak_start_boundary <= m_cur_u and nak_start_boundary >= m_prev:
             nak_start_utc = _estimate_crossing_time(prev_sunrise_utc, m_prev, sunrise_utc, m_cur_u, nak_start_boundary)
@@ -595,7 +557,6 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
             g0, g1 = _VARJYA_GHATI[(nak_idx_1 - 1) % 27]
             a = nak_start_utc + nak_dur * (g0 / 60.0)
             b = nak_start_utc + nak_dur * (g1 / 60.0)
-            # clamp to daytime window (optional safe)
             if b > a:
                 varjya_sp.append((a, b))
 
@@ -606,18 +567,64 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         ritu = _ritu_from_sun_rashi(sun_r)
         ayana = _ayana_from_sun_rashi(sun_r)
 
-        # Masa (prev amavasya approx using tithi phase linear)
-        # Estimate prev amavasya time from d0 and daily delta
+        # ----------------------------
+        # ✅ Masa + Adhika/Nija (NEW)
+        # ----------------------------
+        # Estimate "prev amavasya" from d0 + rate
         d_rate = (d1u - d0) / max(1.0, (next_sunrise_utc - sunrise_utc).total_seconds())
         if abs(d_rate) > 1e-9:
             prev_am_utc = sunrise_utc - timedelta(seconds=float(d0 / d_rate))
         else:
             prev_am_utc = sunrise_utc - timedelta(days=15)
+
         if prev_am_utc < sunrise_utc - timedelta(days=35):
             prev_am_utc = sunrise_utc - timedelta(days=15)
 
+        # Estimate "next amavasya" from d0 + rate (target = 360)
+        if abs(d_rate) > 1e-9:
+            sec_to_next_am = float((360.0 - d0) / d_rate)
+            next_am_utc = sunrise_utc + timedelta(seconds=sec_to_next_am)
+        else:
+            next_am_utc = sunrise_utc + timedelta(days=15)
+
+        # sanity clamp
+        next_am_utc = _clamp_dt(next_am_utc, sunrise_utc, sunrise_utc + timedelta(days=40))
+
+        # month name from Sun at prev amavasya
         sun_prev_am, _ = fetch_sid(prev_am_utc)
-        masa_name = LUNAR_MONTH_BY_SUN_RASHI.get(_sun_rashi(sun_prev_am), "—")
+        masa_name = _masa_name_from_sun_sid(sun_prev_am)
+
+        # adhika/kshaya for current month
+        adhika_masa, kshaya_masa = _detect_masa_flags(fetch_sid, prev_am_utc, next_am_utc)
+
+        # detect Nija (when previous month was adhika and same masa_name repeats)
+        nija_masa = False
+        if (not adhika_masa) and (not kshaya_masa) and abs(d_rate) > 1e-9:
+            # previous-previous amavasya approx one synodic month earlier
+            sec_one_month = float(360.0 / d_rate)  # seconds for 360° tithi cycle
+            prev_prev_am_utc = prev_am_utc - timedelta(seconds=sec_one_month)
+            prev_prev_am_utc = _clamp_dt(prev_prev_am_utc, prev_am_utc - timedelta(days=40), prev_am_utc - timedelta(days=20))
+
+            sun_prev_prev_am, _ = fetch_sid(prev_prev_am_utc)
+            prev_masa_name = _masa_name_from_sun_sid(sun_prev_prev_am)
+
+            prev_adhika, _ = _detect_masa_flags(fetch_sid, prev_prev_am_utc, prev_am_utc)
+
+            if prev_adhika and (prev_masa_name == masa_name):
+                nija_masa = True
+
+        if kshaya_masa:
+            masa_type = "KSHAYA"
+            masa_display = f"{masa_name} (Kshaya)"
+        elif adhika_masa:
+            masa_type = "ADHIKA"
+            masa_display = f"{masa_name} (Adhika)"
+        elif nija_masa:
+            masa_type = "NIJA"
+            masa_display = f"{masa_name} (Nija)"
+        else:
+            masa_type = "NORMAL"
+            masa_display = masa_name
 
         shaka = _approx_shaka_year(sunrise_local)
         vikrama = _approx_vikrama_year(sunrise_local)
@@ -630,6 +637,12 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
             "vaara": vaara,
 
             "masa_name": masa_name,
+            "masa_type": masa_type,          # ✅ NEW (ADHIKA/NIJA/NORMAL/KSHAYA)
+            "masa_display": masa_display,    # ✅ NEW (pre-formatted)
+            "adhika_masa": bool(adhika_masa),
+            "nija_masa": bool(nija_masa),    # ✅ NEW
+            "kshaya_masa": bool(kshaya_masa),
+
             "paksha": paksha,
             "ritu": ritu,
             "ayana": ayana,
@@ -654,22 +667,25 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
             "nakshatra": {"name": nak_name, "end_local": fmt_local(nak_end_local), "end_hms": fmt_hm(nak_end_local)},
             "yoga": {"name": yoga_name, "end_local": fmt_local(yoga_end_local), "end_hms": fmt_hm(yoga_end_local)},
             "karana": {"name": kar_name, "end_local": fmt_local(kar_end_local), "end_hms": fmt_hm(kar_end_local)},
-
-           
         }
 
         _cache_set(key, out)
         return out
 
     except Exception as e:
-        # ✅ graceful fallback: UI should not spin forever.
         note_extra = f"NASA/compute error: {type(e).__name__}"
-        # minimal but complete structure so frontend shows something
         out: Dict[str, Any] = {
             "sunrise_local": fmt_local(sunrise_local),
             "sunset_local": fmt_local(sunset_local),
             "next_sunrise_local": fmt_local(next_sunrise_local),
             "vaara": vaara,
+
+            "masa_name": "—",
+            "masa_type": "NORMAL",
+            "masa_display": "—",
+            "adhika_masa": False,
+            "nija_masa": False,
+            "kshaya_masa": False,
 
             "rahu_kalam": _fmt_span(zone, rahu_a, rahu_b),
             "yamaganda": _fmt_span(zone, yama_a, yama_b),
