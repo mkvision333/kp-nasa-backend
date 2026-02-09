@@ -1,4 +1,4 @@
-# app/core/lagna_kalam_calc.py ✅ FULL REPLACE (export-safe)
+# app/core/lagna_kalam_calc.py ✅ FULL REPLACE (KP-correct sunrise, CPU-safe, no Skyfield loop)
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone, date
@@ -6,9 +6,7 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, List, Tuple
 import math
 
-from app.core.nasa_ephemeris import get_planets_ecliptic
 from app.core.ayanamsa_exact import get_ayanamsa_deg
-from app.core.houses_placidus import placidus_cusps
 from app.core.panchangam_calc import _sunrise_sunset_utc_for_local_date
 
 SIGNS_EN = [
@@ -16,9 +14,18 @@ SIGNS_EN = [
     "Libra","Scorpio","Sagittarius","Capricorn","Aquarius","Pisces"
 ]
 
+# -------------------------
+# helpers
+# -------------------------
 def _wrap360(x: float) -> float:
     x = float(x) % 360.0
     return x if x >= 0 else x + 360.0
+
+def _deg2rad(d: float) -> float:
+    return float(d) * math.pi / 180.0
+
+def _rad2deg(r: float) -> float:
+    return float(r) * 180.0 / math.pi
 
 def _sign_index(deg: float) -> int:
     return int(math.floor(_wrap360(deg) / 30.0)) % 12
@@ -44,24 +51,77 @@ def _ayan_mode_normalize(ayanamsa: str) -> str:
         return "LAHIRI"
     return "KP_OLD"
 
-def _local_to_utc_iso(dt_local_naive: datetime, tz: str) -> str:
+def _local_to_utc_dt(dt_local_naive: datetime, tz: str) -> datetime:
     zone = ZoneInfo(tz)
     aware_local = dt_local_naive.replace(tzinfo=zone)
-    aware_utc = aware_local.astimezone(timezone.utc)
-    return aware_utc.isoformat().replace("+00:00", "Z")
+    return aware_local.astimezone(timezone.utc)
 
-def _jd_ut_for_local(dt_local_naive: datetime, tz: str, lat: float, lon: float) -> float:
-    utc_iso = _local_to_utc_iso(dt_local_naive, tz)
-    jd_ut, _ = get_planets_ecliptic(utc_iso, float(lat), float(lon))
-    return float(jd_ut)
+def _datetime_utc_to_jd(dt_utc: datetime) -> float:
+    """UTC datetime -> Julian Day (UT). FAST math (no skyfield)."""
+    if dt_utc.tzinfo is None:
+        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+    dt_utc = dt_utc.astimezone(timezone.utc)
 
-def _asc_sidereal_deg(dt_local_naive: datetime, tz: str, lat: float, lon: float, ay_mode: str) -> float:
-    jd_ut = _jd_ut_for_local(dt_local_naive, tz, lat, lon)
-    cusps = placidus_cusps(jd_ut, float(lat), float(lon))  # tropical
-    asc_trop = float(cusps["asc"])
-    ay_deg = float(get_ayanamsa_deg(jd_ut, ay_mode))
-    return _wrap360(asc_trop - ay_deg)
+    y = dt_utc.year
+    m = dt_utc.month
+    D = dt_utc.day
 
+    frac = (dt_utc.hour + (dt_utc.minute + (dt_utc.second + dt_utc.microsecond / 1e6) / 60.0) / 60.0) / 24.0
+    d = D + frac
+
+    if m <= 2:
+        y -= 1
+        m += 12
+
+    A = y // 100
+    B = 2 - A + (A // 4)
+    jd = int(365.25 * (y + 4716)) + int(30.6001 * (m + 1)) + d + B - 1524.5
+    return float(jd)
+
+def _jd_ut_for_local(dt_local_naive: datetime, tz: str) -> float:
+    utc_dt = _local_to_utc_dt(dt_local_naive, tz)
+    return _datetime_utc_to_jd(utc_dt)
+
+# -------------------------
+# FAST Ascendant (no placidus)
+# -------------------------
+def _mean_obliquity_deg(jd: float) -> float:
+    T = (jd - 2451545.0) / 36525.0
+    eps_arcsec = 84381.448 - 46.8150 * T - 0.00059 * (T ** 2) + 0.001813 * (T ** 3)
+    return eps_arcsec / 3600.0
+
+def _gmst_deg(jd: float) -> float:
+    T = (jd - 2451545.0) / 36525.0
+    gmst = 280.46061837 + 360.98564736629 * (jd - 2451545.0) + 0.000387933 * T * T - (T ** 3) / 38710000.0
+    return _wrap360(gmst)
+
+def _asc_tropical_deg(jd: float, lat: float, lon: float) -> float:
+    """
+    Tropical Asc from Local Sidereal Time.
+    lon east positive ✅ (India positive)
+    """
+    eps = _deg2rad(_mean_obliquity_deg(jd))
+    phi = _deg2rad(float(lat))
+
+    lst = _wrap360(_gmst_deg(jd) + float(lon))
+    theta = _deg2rad(lst)
+
+    # quadrant-safe
+    y = math.cos(theta)
+    x = math.sin(theta) * math.cos(eps) - math.tan(phi) * math.sin(eps)
+
+    asc = math.atan2(y, x)
+    asc_deg = _wrap360(_rad2deg(asc) + 180.0)
+    return asc_deg
+
+def _asc_sidereal_deg(dt_local_naive: datetime, tz: str, lat: float, lon: float, ay_deg: float) -> float:
+    jd = _jd_ut_for_local(dt_local_naive, tz)
+    asc_trop = _asc_tropical_deg(jd, float(lat), float(lon))
+    return _wrap360(asc_trop - float(ay_deg))
+
+# -------------------------
+# sunrise helpers (KP correct)
+# -------------------------
 def _sunrise_nextsunrise_local(dateKey: str, tz: str, lat: float, lon: float) -> Tuple[datetime, datetime]:
     zone = ZoneInfo(tz)
     d0 = _parse_datekey(dateKey)
@@ -73,92 +133,83 @@ def _sunrise_nextsunrise_local(dateKey: str, tz: str, lat: float, lon: float) ->
 
     if next_sunrise_local <= sunrise_local:
         next_sunrise_local = sunrise_local + timedelta(hours=24)
-
     return sunrise_local, next_sunrise_local
 
-def _forward_dist_to(target: float, x: float) -> float:
-    return (_wrap360(target - x) + 360.0) % 360.0
-
-def _find_crossing_time(
-    target_deg: float,
+def _find_crossing_time_by_signchange(
+    cur_sign: int,
     t_left: datetime,
     t_right: datetime,
     tz: str,
     lat: float,
     lon: float,
-    ay_mode: str,
-    max_iter: int = 40
+    ay_deg: float,
+    max_iter: int = 34
 ) -> datetime:
-    target = _wrap360(target_deg)
+    # ensure bracket
+    aL = _asc_sidereal_deg(t_left, tz, lat, lon, ay_deg)
+    aR = _asc_sidereal_deg(t_right, tz, lat, lon, ay_deg)
+
+    if _sign_index(aL) != cur_sign:
+        return t_left
+    if _sign_index(aR) == cur_sign:
+        return t_right
 
     for _ in range(max_iter):
         if (t_right - t_left).total_seconds() <= 1:
-            return t_left
-
+            return t_right
         mid = t_left + (t_right - t_left) / 2
-
-        aL = _asc_sidereal_deg(t_left, tz, lat, lon, ay_mode)
-        aM = _asc_sidereal_deg(mid, tz, lat, lon, ay_mode)
-
-        dL = _forward_dist_to(target, aL)
-        dM = _forward_dist_to(target, aM)
-
-        if dM < dL:
+        aM = _asc_sidereal_deg(mid, tz, lat, lon, ay_deg)
+        if _sign_index(aM) == cur_sign:
             t_left = mid
         else:
             t_right = mid
+    return t_right
 
-    return t_left
-
-# ✅ IMPORTANT: This is the symbol your route imports
+# ✅ route imports this
 def compute_lagna_kalam(dateKey: str, tz: str, lat: float, lon: float, ayanamsa: str) -> Dict[str, Any]:
     """
-    Lagna Kalam: sunrise -> next sunrise
-    Show exact sign boundary crossings based on ASC (sidereal).
+    KP-correct Lagna Kalam:
+    - Start at SUNRISE local (accurate from your panchangam calc)
+    - Asc computed FAST via sidereal-time formula
+    - Ayanamsa computed once per request
+    - Step scan + binary refinement (no minute loop, no CPU hang)
     """
     ay_mode = _ayan_mode_normalize(ayanamsa)
     sunrise_local, next_sunrise_local = _sunrise_nextsunrise_local(dateKey, tz, lat, lon)
 
-    asc0 = _asc_sidereal_deg(sunrise_local, tz, lat, lon, ay_mode)
+    # ✅ ayanamsa once
+    jd0 = _jd_ut_for_local(sunrise_local, tz)
+    ay_deg = float(get_ayanamsa_deg(jd0, ay_mode))
+
+    asc0 = _asc_sidereal_deg(sunrise_local, tz, float(lat), float(lon), ay_deg)
     cur_sign = _sign_index(asc0)
     cur_start = sunrise_local
     cur_start_deg_in = _deg_in_sign(asc0)
 
     items: List[Dict[str, Any]] = []
 
+    STEP_MIN = 5  # fast + reliable
     for i in range(12):
-        boundary = ((cur_sign + 1) * 30) % 360.0
-
-        # bracket search (scan forward in 20-min steps)
         tA = cur_start
-        tB = min(cur_start + timedelta(minutes=20), next_sunrise_local)
-
-        aA = _asc_sidereal_deg(tA, tz, lat, lon, ay_mode)
-        dA = _forward_dist_to(boundary, aA)
-
+        tB = min(cur_start + timedelta(minutes=STEP_MIN), next_sunrise_local)
         found = False
-        while tB <= next_sunrise_local:
-            aB = _asc_sidereal_deg(tB, tz, lat, lon, ay_mode)
-            dB = _forward_dist_to(boundary, aB)
 
-            # when distance starts decreasing, we're approaching the boundary
-            if dB < dA:
+        while tB <= next_sunrise_local:
+            aB = _asc_sidereal_deg(tB, tz, float(lat), float(lon), ay_deg)
+            if _sign_index(aB) != cur_sign:
                 found = True
                 break
-
             tA = tB
-            dA = dB
-            tB = min(tB + timedelta(minutes=20), next_sunrise_local)
-
+            tB = min(tB + timedelta(minutes=STEP_MIN), next_sunrise_local)
             if tA >= next_sunrise_local:
                 break
 
         if found and tA < next_sunrise_local:
-            end_time = _find_crossing_time(boundary, tA, tB, tz, lat, lon, ay_mode)
+            end_time = _find_crossing_time_by_signchange(cur_sign, tA, tB, tz, float(lat), float(lon), ay_deg)
         else:
             end_time = next_sunrise_local
 
-        asc_end = _asc_sidereal_deg(end_time, tz, lat, lon, ay_mode)
+        asc_end = _asc_sidereal_deg(end_time, tz, float(lat), float(lon), ay_deg)
         end_deg_in = _deg_in_sign(asc_end)
         dur_min = int(round((end_time - cur_start).total_seconds() / 60.0))
 
@@ -175,7 +226,6 @@ def compute_lagna_kalam(dateKey: str, tz: str, lat: float, lon: float, ayanamsa:
         if end_time >= next_sunrise_local:
             break
 
-        # next sign
         cur_start = end_time
         cur_sign = (cur_sign + 1) % 12
         cur_start_deg_in = 0.0
