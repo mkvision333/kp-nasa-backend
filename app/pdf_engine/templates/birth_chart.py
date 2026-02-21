@@ -1,4 +1,3 @@
-# backend/pdf_engine/templates/birth_chart.py
 from __future__ import annotations
 
 from typing import Dict, Any, List, Tuple
@@ -9,14 +8,12 @@ from reportlab.platypus import (
     Spacer,
     Table,
     TableStyle,
-    PageBreak,
     Flowable,
 )
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
-
 
 from ..common.header_footer import on_page
 
@@ -69,7 +66,7 @@ class SouthIndianChartFlowable(Flowable):
     """
     Simple South Indian chart box (12 houses).
     Accepts `houses` dict like: {1: "SU MO", 2: "MA", ...}
-    NOTE: This is a clean placeholder; later we can make it exact like your app chart.
+    NOTE: Placeholder; later we can match your exact app chart layout.
     """
 
     def __init__(self, houses: Dict[int, str], title: str = "Rasi Chart", size_mm: int = 90):
@@ -95,7 +92,7 @@ class SouthIndianChartFlowable(Flowable):
         c.setLineWidth(1)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
-        # 4x4 grid lines for South Indian layout feel
+        # 4x4 grid lines
         step = self.size / 4.0
         c.setLineWidth(0.6)
         c.setStrokeColor(colors.HexColor("#444444"))
@@ -103,8 +100,7 @@ class SouthIndianChartFlowable(Flowable):
             c.line(x + step * i, y, x + step * i, y + self.size)
             c.line(x, y + step * i, x + self.size, y + step * i)
 
-        # House mapping for a simple 4x4 South style (approx positions)
-        # We’ll refine later to match your exact layout.
+        # House mapping (approx South Indian placement)
         house_pos = {
             1: (1, 0),
             2: (2, 0),
@@ -126,14 +122,12 @@ class SouthIndianChartFlowable(Flowable):
             txt = str(self.houses.get(house, "")).strip()
             if not txt:
                 continue
-            # cell origin
             ox = x + step * cx
             oy = y + step * cy
-            # padding inside cell
             c.drawString(ox + 2 * mm, oy + step - 6 * mm, f"{house}: {txt}")
 
 
-def build_simple_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
+def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
     styles = getSampleStyleSheet()
     body = ParagraphStyle(
         "Body",
@@ -151,11 +145,11 @@ def build_simple_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dic
         rightMargin=12 * mm,
         topMargin=22 * mm,
         bottomMargin=16 * mm,
-        title="Simple Birth Chart Report",
+        title="Birth Chart Report",
         author="Pro KP Astrologer",
     )
 
-    story = []
+    story: List[Any] = []
 
     # 1) Birth Details
     story.append(_section_title("1) Birth Details"))
@@ -180,8 +174,8 @@ def build_simple_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dic
     # 2) Charts
     story.append(_section_title("2) Charts"))
     charts = data.get("charts") or {}
-    rasi_houses = (charts.get("rasiHouses") or {})  # {1:"SU MO", ...}
-    nav_houses = (charts.get("navamsaHouses") or {})
+    rasi_houses = charts.get("rasiHouses") or {}
+    nav_houses = charts.get("navamsaHouses") or {}
 
     chart_row = Table(
         [
@@ -198,7 +192,7 @@ def build_simple_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dic
 
     # 3) Cusps
     story.append(_section_title("3) Cusps"))
-    cusps = data.get("cusps") or []  # list of dicts
+    cusps = data.get("cusps") or []
     if cusps:
         cusp_data = [["House", "Sign", "Degree", "Star Lord", "Sub Lord"]]
         for c in cusps:
@@ -237,7 +231,7 @@ def build_simple_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dic
 
     # 4) Planets
     story.append(_section_title("4) Planets"))
-    planets = data.get("planets") or []  # list of dicts
+    planets = data.get("planets") or []
     if planets:
         p_data = [["Planet", "Sign", "Degree", "Nakshatra", "Pada", "Star Lord", "Sub Lord"]]
         for p in planets:
@@ -276,7 +270,7 @@ def build_simple_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dic
         story.append(Paragraph("Planets data not provided.", body))
     story.append(Spacer(1, 6 * mm))
 
-    # 5) Current Dasha summary (simple)
+    # 5) Dasha (Current)
     story.append(_section_title("5) Dasha (Current)"))
     dasha = data.get("dasha") or {}
     story.append(
@@ -294,7 +288,7 @@ def build_simple_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dic
 
     # 6) Mini Bhava Phalithalu
     story.append(_section_title("6) Mini Bhava Phalithalu"))
-    bhava = data.get("bhavaPhal") or []  # list of {house, good, bad, notes}
+    bhava = data.get("bhavaPhal") or []
     if bhava:
         b_data = [["House", "Good", "Careful", "Notes"]]
         for b in bhava:
@@ -328,7 +322,7 @@ def build_simple_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dic
     else:
         story.append(Paragraph("Bhava phalithalu data not provided.", body))
 
-    # Build with header/footer
+    # Header/Footer
     def _on_page(canvas, doc_):
         on_page(canvas, doc_, meta)
 
