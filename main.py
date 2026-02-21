@@ -63,6 +63,11 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 from app.routes.lagna_kalam_route import router as lagna_kalam_router
 app.include_router(lagna_kalam_router)
+
+# ✅ include PDF router (IMPORTANT: correct import path)
+from app.routes.pdf_routes import router as pdf_router
+app.include_router(pdf_router)
+
 # -------------------------------------------------
 # Helpers
 # -------------------------------------------------
