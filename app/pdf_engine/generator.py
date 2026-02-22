@@ -1,4 +1,4 @@
-# backend/pdf_engine/generator.py
+# backend/pdf_engine/generator.py ✅ FULL REPLACE
 from __future__ import annotations
 
 import os
@@ -16,10 +16,11 @@ def ensure_dir(p: str) -> None:
 def generate_pdf(
     pdf_type: str,
     payload: Dict[str, Any],
-    out_dir: str = "tmp/pdfs",
+    out_dir: str = "/tmp/pdfs",
 ) -> Tuple[str, str]:
     """
     Returns (file_path, report_id)
+    Render safe: /tmp/pdfs
     """
     ensure_dir(out_dir)
     report_id = f"{pdf_type.upper()}-{uuid.uuid4().hex[:10].upper()}"
@@ -30,7 +31,6 @@ def generate_pdf(
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "reportId": report_id,
         "pdfType": pdf_type,
-        # you can add txId later for paid modules
         "txId": payload.get("txId") or "",
         "userName": payload.get("userName") or "",
     }

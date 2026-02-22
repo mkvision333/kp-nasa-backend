@@ -62,16 +62,32 @@ def _section_title(text: str) -> Paragraph:
     return Paragraph(text, st)
 
 
+def _coerce_house_map(houses: Dict[Any, Any]) -> Dict[int, str]:
+    """
+    JSON keys arrive as strings ("1".."12"). Convert to int.
+    """
+    out: Dict[int, str] = {}
+    if not isinstance(houses, dict):
+        return out
+    for k, v in houses.items():
+        try:
+            ki = int(str(k).strip())
+        except Exception:
+            continue
+        if 1 <= ki <= 12:
+            out[ki] = str(v or "").strip()
+    return out
+
+
 class SouthIndianChartFlowable(Flowable):
     """
     Simple South Indian chart box (12 houses).
-    Accepts `houses` dict like: {1: "SU MO", 2: "MA", ...}
-    NOTE: Placeholder; later we can match your exact app chart layout.
+    houses: {1: "Su Mo", 2: "Ma", ...} OR {"1":"Su Mo", ...}
     """
 
     def __init__(self, houses: Dict[int, str], title: str = "Rasi Chart", size_mm: int = 90):
         super().__init__()
-        self.houses = houses or {}
+        self.houses = _coerce_house_map(houses or {})
         self.title = title
         self.size = size_mm * mm
         self.width = self.size
@@ -92,7 +108,7 @@ class SouthIndianChartFlowable(Flowable):
         c.setLineWidth(1)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
-        # 4x4 grid lines
+        # 4x4 grid
         step = self.size / 4.0
         c.setLineWidth(0.6)
         c.setStrokeColor(colors.HexColor("#444444"))
@@ -100,7 +116,7 @@ class SouthIndianChartFlowable(Flowable):
             c.line(x + step * i, y, x + step * i, y + self.size)
             c.line(x, y + step * i, x + self.size, y + step * i)
 
-        # House mapping (approx South Indian placement)
+        # Approx South Indian placement
         house_pos = {
             1: (1, 0),
             2: (2, 0),
@@ -118,12 +134,14 @@ class SouthIndianChartFlowable(Flowable):
 
         c.setFont("Helvetica", 7.5)
         c.setFillColor(colors.HexColor("#111111"))
+
         for house, (cx, cy) in house_pos.items():
             txt = str(self.houses.get(house, "")).strip()
             if not txt:
                 continue
             ox = x + step * cx
             oy = y + step * cy
+            # House label + planets
             c.drawString(ox + 2 * mm, oy + step - 6 * mm, f"{house}: {txt}")
 
 
@@ -322,7 +340,6 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     else:
         story.append(Paragraph("Bhava phalithalu data not provided.", body))
 
-    # Header/Footer
     def _on_page(canvas, doc_):
         on_page(canvas, doc_, meta)
 
