@@ -121,19 +121,19 @@ class SouthIndianChartFlowable(Flowable):
 
         # Approx South Indian placement
         house_pos = {
-            1: (1, 0),
-            2: (2, 0),
-            3: (3, 0),
-            4: (3, 1),
-            5: (3, 2),
-            6: (3, 3),
-            7: (2, 3),
-            8: (1, 3),
-            9: (0, 3),
-            10: (0, 2),
-            11: (0, 1),
-            12: (0, 0),
-        }
+    1: (1, 3),   # Top row, 2nd box
+    2: (2, 3),
+    3: (3, 3),
+    4: (3, 2),
+    5: (3, 1),
+    6: (3, 0),
+    7: (2, 0),
+    8: (1, 0),
+    9: (0, 0),
+    10: (0, 1),
+    11: (0, 2),
+    12: (0, 3),
+}
 
         c.setFont("Helvetica", 7.5)
         c.setFillColor(colors.HexColor("#111111"))
@@ -196,6 +196,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     story.append(Spacer(1, 6 * mm))
 
     # 2) Charts
+    story.append(PageBreak())
     story.append(_section_title("2) Charts"))
     charts = data.get("charts") or {}
     rasi_houses = charts.get("rasiHouses") or {}
@@ -220,10 +221,16 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
         ("BOTTOMPADDING", (0,0), (-1,-1), 0),
     ])
 )
-    story.append(chart_row)
-    story.append(Spacer(1, 6 * mm))
+    from reportlab.platypus import KeepTogether
 
+    story.append(
+        KeepTogether([
+            chart_row,
+            Spacer(1, 6 * mm)
+        ])
+    )
     # 3) Cusps
+    story.append(PageBreak())
     story.append(_section_title("3) Cusps"))
     cusps = data.get("cusps") or []
     if cusps:
@@ -263,6 +270,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     story.append(Spacer(1, 6 * mm))
 
     # 4) Planets
+    story.append(PageBreak())
     story.append(_section_title("4) Planets"))
     planets = data.get("planets") or []
     if planets:
@@ -303,6 +311,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     story.append(Spacer(1, 6 * mm))
 
     # 5) Dasha (Current)
+    story.append(PageBreak())
     story.append(_section_title("5) Dasha (Current)"))
     dasha = data.get("dasha") or {}
     story.append(
@@ -319,6 +328,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     story.append(Spacer(1, 6 * mm))
 
     # 6) Mini Bhava Phalithalu
+    story.append(PageBreak())
     story.append(_section_title("6) Mini Bhava Phalithalu"))
     bhava = data.get("bhavaPhal") or []
     if bhava:
