@@ -16,6 +16,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 from ..common.header_footer import on_page
+from app.pdf_engine.common.cover_page import build_cover_page
 
 
 def _safe(v: Any, dash: str = "—") -> str:
@@ -168,7 +169,10 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     )
 
     story: List[Any] = []
-
+    
+    # Cover Page
+    build_cover_page(story, data.get("userName", ""))
+    
     # 1) Birth Details
     story.append(_section_title("1) Birth Details"))
     birth = data.get("birth") or {}
