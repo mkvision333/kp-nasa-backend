@@ -5,17 +5,25 @@ from reportlab.lib import colors
 def on_page(canvas, doc, meta):
     canvas.saveState()
 
-    canvas.setFont("Helvetica-Bold", 9)
-    canvas.setFillColor(colors.HexColor("#3E2723"))
+    width, height = doc.pagesize
 
+    # ✅ Cream Background
+    canvas.setFillColor(colors.HexColor("#F6EFD6"))
+    canvas.rect(0, 0, width, height, stroke=0, fill=1)
+
+    # Header
+    canvas.setFillColor(colors.HexColor("#3E2723"))
+    canvas.setFont("Helvetica-Bold", 10)
     canvas.drawCentredString(
-        doc.pagesize[0] / 2,
-        doc.pagesize[1] - 12,
+        width / 2,
+        height - 12,
         "Pro KP Astrology"
     )
 
+    # Footer
+    canvas.setFont("Helvetica", 9)
     canvas.drawCentredString(
-        doc.pagesize[0] / 2,
+        width / 2,
         12,
         f"Page {doc.page}"
     )
