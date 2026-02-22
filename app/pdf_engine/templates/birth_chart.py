@@ -1,3 +1,5 @@
+# app/pdf_engine/templates/birth_chart.py  ✅ FULL REPLACE
+
 from __future__ import annotations
 
 from typing import Dict, Any, List, Tuple
@@ -21,6 +23,8 @@ from reportlab.lib import colors
 from ..common.header_footer import on_page
 from app.pdf_engine.common.cover_page import build_cover_page
 
+
+# Theme
 CREAM = colors.HexColor("#FFF6E6")
 CREAM2 = colors.HexColor("#FFFBF2")
 GOLD = colors.HexColor("#B8860B")
@@ -34,10 +38,33 @@ def _safe(v: Any, dash: str = "—") -> str:
 
 
 def _fmt_deg_short(v: Any) -> str:
-    """Degree formatting like 12°34' (best-effort from string/number)."""
-    s = str(v or "").strip()
+    """
+    Degree formatting like 12°34' (best-effort from string/number).
+    Accepts: "12 34", "12°34'", "12.56", 12.56 etc.
+    """
+    if v is None:
+        return "—"
+    s = str(v).strip()
     if not s:
         return "—"
+
+    # If it looks like float degrees (e.g., 12.56), convert to deg + minutes
+    mfloat = re.findall(r"-?\d+(?:\.\d+)?", s)
+    if mfloat:
+        try:
+            val = float(mfloat[0])
+            sign = "-" if val < 0 else ""
+            val = abs(val)
+            d = int(val)
+            mins = int(round((val - d) * 60))
+            if mins >= 60:
+                d += 1
+                mins -= 60
+            return f"{sign}{d}°{str(mins).zfill(2)}'"
+        except Exception:
+            pass
+
+    # Otherwise extract first 2 integers
     nums = re.findall(r"\d+", s)
     if len(nums) >= 2:
         d = int(nums[0])
@@ -100,13 +127,33 @@ def _coerce_house_map(houses: Dict[Any, Any]) -> Dict[int, str]:
     return out
 
 
+def _has_any_value(d: Dict[str, Any]) -> bool:
+    if not isinstance(d, dict):
+        return False
+    for _, v in d.items():
+        if v is None:
+            continue
+        if str(v).strip():
+            return True
+    return False
+
+
 class SouthIndianChartFlowable(Flowable):
     """
-    South Indian chart:
-    ✅ Mesham is always TOP-LEFT 2nd box, clockwise order.
+    ✅ South Indian chart (12 perimeter boxes only)
+    ✅ Mesham is always TOP row 2nd box, clockwise order
+    ✅ NO middle grid lines / NO center boxes
     """
 
-        def draw(self):
+    def __init__(self, houses: Dict[int, str], title: str = "Rasi Chart", size_mm: int = 90):
+        super().__init__()
+        self.houses = _coerce_house_map(houses or {})
+        self.title = title
+        self.size = size_mm * mm
+        self.width = self.size
+        self.height = self.size + 10 * mm
+
+    def draw(self):
         c = self.canv
         x = 0
         y = 0
@@ -116,33 +163,30 @@ class SouthIndianChartFlowable(Flowable):
         c.setFillColor(colors.HexColor("#111111"))
         c.drawString(x, y + self.size + 4 * mm, self.title)
 
-        # Layout
-        step = self.size / 4.0  # each cell size (4x4 reference grid)
+        step = self.size / 4.0
 
-        # ✅ Outer decorative frame only
-        c.setStrokeColor(colors.HexColor("#B8860B"))  # gold
-        c.setLineWidth(1.4)
+        # Outer border
+        c.setStrokeColor(GOLD)
+        c.setLineWidth(1.2)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
-        # ✅ 12 boxes ONLY (no middle grid lines, no center boxes)
-        # box positions in a 4x4 system BUT we draw ONLY perimeter cells
-        # top row (cy=3): cx=0..3
-        # bottom row (cy=0): cx=0..3
-        # left col middle: (0,1),(0,2)
-        # right col middle: (3,1),(3,2)
+        # ✅ Draw ONLY 12 perimeter cells
         perimeter_cells = set()
         for cx in range(4):
-            perimeter_cells.add((cx, 3))
-            perimeter_cells.add((cx, 0))
-        perimeter_cells.add((0, 1))
-        perimeter_cells.add((0, 2))
-        perimeter_cells.add((3, 1))
-        perimeter_cells.add((3, 2))
+            perimeter_cells.add((cx, 3))  # top
+            perimeter_cells.add((cx, 0))  # bottom
+        perimeter_cells.update({(0, 1), (0, 2), (3, 1), (3, 2)})  # sides
 
-        # ✅ South Indian sign placement (Mesha top row 2nd box)
-        # 1..12 clockwise
+        c.setStrokeColor(GOLD)
+        c.setLineWidth(1.0)
+        for (cx, cy) in perimeter_cells:
+            ox = x + step * cx
+            oy = y + step * cy
+            c.rect(ox, oy, step, step, stroke=1, fill=0)
+
+        # 1 at TOP row 2nd box (clockwise)
         house_pos = {
-            1: (1, 3),   # Mesham (top row 2nd)
+            1: (1, 3),
             2: (2, 3),
             3: (3, 3),
             4: (3, 2),
@@ -156,51 +200,27 @@ class SouthIndianChartFlowable(Flowable):
             12: (0, 3),
         }
 
-        # ✅ Draw the 12 house boxes
-        c.setLineWidth(1.0)
-        c.setStrokeColor(colors.HexColor("#B8860B"))  # gold box borders
-
-        for (cx, cy) in sorted(perimeter_cells):
-            ox = x + step * cx
-            oy = y + step * cy
-            c.rect(ox, oy, step, step, stroke=1, fill=0)
-
-        # ✅ Fill text inside the correct 12 boxes
-        c.setFont("Helvetica", 8.2)
         c.setFillColor(colors.HexColor("#111111"))
 
         for house, (cx, cy) in house_pos.items():
-            txt = str(self.houses.get(house, "")).strip()
-
             ox = x + step * cx
             oy = y + step * cy
+            txt = str(self.houses.get(house, "")).strip()
 
-            # House number small (top-left inside box)
+            # house number
             c.setFont("Helvetica-Bold", 7.2)
             c.drawString(ox + 2 * mm, oy + step - 5 * mm, str(house))
 
-            # Planets text (wrap-ish: split by space into 2 lines max)
+            # planets (wrap into 2 lines max)
             if txt:
-                c.setFont("Helvetica", 8.2)
                 parts = txt.split()
                 line1 = " ".join(parts[:6])
                 line2 = " ".join(parts[6:12]) if len(parts) > 6 else ""
+
+                c.setFont("Helvetica", 8.0)
                 c.drawString(ox + 2 * mm, oy + step - 10 * mm, line1)
                 if line2:
                     c.drawString(ox + 2 * mm, oy + step - 15 * mm, line2)
-
-        # ✅ Center should look empty (no lines, no boxes, nothing)
-
-
-def _has_any_value(d: Dict[str, Any]) -> bool:
-    if not isinstance(d, dict):
-        return False
-    for _, v in d.items():
-        if v is None:
-            continue
-        if str(v).strip():
-            return True
-    return False
 
 
 def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
@@ -230,11 +250,97 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     # Cover Page
     build_cover_page(story, data.get("userName", ""))
 
-    
-
-    # 6) Cusps
+    # 1) Birth Details
     story.append(PageBreak())
-    story.append(_section_title("6) Cusps"))
+    story.append(_section_title("1) Birth Details"))
+    birth = data.get("birth") or {}
+    story.append(
+        _kv_table(
+            [
+                ("Name", data.get("userName") or birth.get("name")),
+                ("Gender", birth.get("gender")),
+                ("Date & Time", birth.get("datetime")),
+                ("Place", birth.get("place")),
+                ("Latitude", birth.get("lat")),
+                ("Longitude", birth.get("lon")),
+                ("Timezone", birth.get("tz")),
+                ("Ayanamsa", data.get("ayanamsa")),
+                ("Node Mode", data.get("nodeMode")),
+            ]
+        )
+    )
+    story.append(Spacer(1, 6 * mm))
+
+    # 2) Charts (always start fresh page, keep together)
+    story.append(PageBreak())
+    story.append(_section_title("2) Charts"))
+    charts = data.get("charts") or {}
+    rasi_houses = charts.get("rasiHouses") or {}
+    nav_houses = charts.get("navamsaHouses") or {}
+
+    chart_row = Table(
+        [
+            [
+                SouthIndianChartFlowable(rasi_houses, title="Rasi Chart", size_mm=85),
+                SouthIndianChartFlowable(nav_houses, title="Navamsa Chart", size_mm=85),
+            ]
+        ],
+        colWidths=[95 * mm, 95 * mm],
+    )
+    chart_row.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BACKGROUND", (0, 0), (-1, -1), CREAM),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    story.append(KeepTogether([chart_row, Spacer(1, 6 * mm)]))
+
+    # 3) Gana Kutami / Ghata Kutami / Adrushta (if provided)
+    # NOTE: backend may send these under different keys; we try common ones.
+    def _pick(*keys: str) -> Dict[str, Any]:
+        for k in keys:
+            v = data.get(k)
+            if isinstance(v, dict) and _has_any_value(v):
+                return v
+        return {}
+
+    gana = _pick("ganaKutami", "gana_kutami", "gana")
+    ghata = _pick("ghataKutami", "ghata_kutami", "ghata")
+    adrushta = _pick("adrushta", "adrushtaKutami", "adrushta_kutami")
+
+    if gana or ghata or adrushta:
+        # keep these together; if too big, it will flow but starts here under charts
+        blocks: List[Any] = []
+        blocks.append(_section_title("3) Gana / Ghata / Adrushta"))
+
+        if gana:
+            blocks.append(Paragraph("<b>Gana Kutami</b>", body))
+            blocks.append(_kv_table([(k, v) for k, v in gana.items()]))
+            blocks.append(Spacer(1, 4 * mm))
+
+        if ghata:
+            blocks.append(Paragraph("<b>Ghata Kutami</b>", body))
+            blocks.append(_kv_table([(k, v) for k, v in ghata.items()]))
+            blocks.append(Spacer(1, 4 * mm))
+
+        if adrushta:
+            blocks.append(Paragraph("<b>Adrushta</b>", body))
+            blocks.append(_kv_table([(k, v) for k, v in adrushta.items()]))
+
+        story.append(KeepTogether(blocks))
+    else:
+        # If nothing provided, show note (optional)
+        story.append(Paragraph("Gana/Ghata/Adrushta details not provided.", body))
+
+    # 4) Cusps
+    story.append(PageBreak())
+    story.append(_section_title("4) Cusps"))
     cusps = data.get("cusps") or []
     if cusps:
         cusp_data = [["House", "Sign", "Degree", "Star Lord", "Sub Lord"]]
@@ -271,9 +377,9 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     else:
         story.append(Paragraph("Cusps data not provided.", body))
 
-    # 7) Planets (degrees shown)
+    # 5) Planets (degrees shown)
     story.append(PageBreak())
-    story.append(_section_title("7) Planets"))
+    story.append(_section_title("5) Planets"))
     planets = data.get("planets") or []
     if planets:
         p_data = [["Planet", "Sign", "Degree", "Nakshatra", "Pada", "Star Lord", "Sub Lord"]]
@@ -312,9 +418,9 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     else:
         story.append(Paragraph("Planets data not provided.", body))
 
-    # 8) Dasha
+    # 6) Dasha
     story.append(PageBreak())
-    story.append(_section_title("8) Dasha (Current)"))
+    story.append(_section_title("6) Dasha (Current)"))
     dasha = data.get("dasha") or {}
     story.append(
         _kv_table(
@@ -328,9 +434,9 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
         )
     )
 
-    # 9) Mini Bhava
+    # 7) Mini Bhava
     story.append(PageBreak())
-    story.append(_section_title("9) Mini Bhava Phalithalu"))
+    story.append(_section_title("7) Mini Bhava Phalithalu"))
     bhava = data.get("bhavaPhal") or []
     if bhava:
         b_data = [["House", "Good", "Careful", "Notes"]]
