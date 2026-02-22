@@ -38,7 +38,7 @@ def _kv_table(rows: List[Tuple[str, Any]]) -> Table:
                 ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#333333")),
                 ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#111111")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.whitesmoke, colors.white]),
+                ("ROWBACKGROUNDS", (0, 0), (-1, -1), [CREAM2, CREAM]),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
                 ("LEFTPADDING", (0, 0), (-1, -1), 6),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 6),
@@ -106,8 +106,9 @@ class SouthIndianChartFlowable(Flowable):
         c.drawString(x, y + self.size + 4 * mm, self.title)
 
         # Outer square
+        # Outer square
         c.setStrokeColor(colors.HexColor("#B8860B"))  # gold border
-c.setLineWidth(1.2)
+        c.setLineWidth(1.2)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
         # 4x4 grid
@@ -287,7 +288,6 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 1), (-1, -1), 10.5),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
-                    ("FONTSIZE", (0, 1), (-1, -1), 8.8),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 5),
