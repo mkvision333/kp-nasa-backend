@@ -106,33 +106,41 @@ class SouthIndianChartFlowable(Flowable):
     ✅ Mesham is always TOP-LEFT 2nd box, clockwise order.
     """
 
-    def __init__(self, houses: Dict[int, str], title: str = "Rasi Chart", size_mm: int = 90):
-        super().__init__()
-        self.houses = _coerce_house_map(houses or {})
-        self.title = title
-        self.size = size_mm * mm
-        self.width = self.size
-        self.height = self.size + 10 * mm
-
-    def draw(self):
+     def draw(self):
         c = self.canv
         x = 0
         y = 0
 
+        # Title
         c.setFont("Helvetica-Bold", 10)
         c.setFillColor(colors.HexColor("#111111"))
         c.drawString(x, y + self.size + 4 * mm, self.title)
 
+        step = self.size / 4.0  # 4x4 reference grid cell size
+
+        # Outer border
         c.setStrokeColor(GOLD)
         c.setLineWidth(1.2)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
-        step = self.size / 4.0
-        c.setLineWidth(0.6)
-        c.setStrokeColor(colors.HexColor("#444444"))
-        for i in range(1, 4):
-            c.line(x + step * i, y, x + step * i, y + self.size)
-            c.line(x, y + step * i, x + self.size, y + step * i)
+        # ✅ Draw ONLY 12 perimeter boxes (no center 4 boxes, no grid lines)
+        perimeter_cells = set()
+        # top + bottom rows
+        for cx in range(4):
+            perimeter_cells.add((cx, 3))
+            perimeter_cells.add((cx, 0))
+        # left + right middle cells
+        perimeter_cells.add((0, 1))
+        perimeter_cells.add((0, 2))
+        perimeter_cells.add((3, 1))
+        perimeter_cells.add((3, 2))
+
+        c.setStrokeColor(GOLD)
+        c.setLineWidth(1.0)
+        for (cx, cy) in perimeter_cells:
+            ox = x + step * cx
+            oy = y + step * cy
+            c.rect(ox, oy, step, step, stroke=1, fill=0)
 
         # 1 at TOP row 2nd box (clockwise)
         house_pos = {
@@ -150,27 +158,28 @@ class SouthIndianChartFlowable(Flowable):
             12: (0, 3),
         }
 
-        c.setFont("Helvetica", 7.5)
+        # Text
         c.setFillColor(colors.HexColor("#111111"))
 
         for house, (cx, cy) in house_pos.items():
-            txt = str(self.houses.get(house, "")).strip()
-            if not txt:
-                continue
             ox = x + step * cx
             oy = y + step * cy
-            c.drawString(ox + 2 * mm, oy + step - 6 * mm, f"{house}: {txt}")
+            txt = str(self.houses.get(house, "")).strip()
 
+            # house number
+            c.setFont("Helvetica-Bold", 7.2)
+            c.drawString(ox + 2 * mm, oy + step - 5 * mm, str(house))
 
-def _has_any_value(d: Dict[str, Any]) -> bool:
-    if not isinstance(d, dict):
-        return False
-    for _, v in d.items():
-        if v is None:
-            continue
-        if str(v).strip():
-            return True
-    return False
+            # planets text (2 lines max)
+            if txt:
+                parts = txt.split()
+                line1 = " ".join(parts[:6])
+                line2 = " ".join(parts[6:12]) if len(parts) > 6 else ""
+
+                c.setFont("Helvetica", 8.0)
+                c.drawString(ox + 2 * mm, oy + step - 10 * mm, line1)
+                if line2:
+                    c.drawString(ox + 2 * mm, oy + step - 15 * mm, line2)
 
 
 def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
@@ -200,115 +209,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     # Cover Page
     build_cover_page(story, data.get("userName", ""))
 
-    # ✅ Page 2 starts (Birth + Gana + Ghata + Adrushta) — all on same page
-    story.append(PageBreak())
-
-    # 1) Birth Details
-    story.append(_section_title("1) Birth Details"))
-    birth = data.get("birth") or {}
-    story.append(
-        _kv_table(
-            [
-                ("Name", data.get("userName") or birth.get("name")),
-                ("Gender", birth.get("gender")),
-                ("Date & Time", birth.get("datetime")),
-                ("Place", birth.get("place")),
-                ("Latitude", birth.get("lat")),
-                ("Longitude", birth.get("lon")),
-                ("Timezone", birth.get("tz")),
-                ("Ayanamsa", data.get("ayanamsa")),
-                ("Node Mode", data.get("nodeMode")),
-            ]
-        )
-    )
-    story.append(Spacer(1, 6 * mm))
-
-    # 2) Gana Kutami
-    story.append(_section_title("2) Gana Kutami"))
-    gk = data.get("ganaKutami") or data.get("gana_kutami") or {}
-    if _has_any_value(gk):
-        story.append(
-            _kv_table(
-                [
-                    ("Janma Nakshatram", gk.get("janmaNakshatra") or gk.get("janma_nakshatra")),
-                    ("Pada", gk.get("pada")),
-                    ("Ganam", gk.get("gana")),
-                    ("Nadi", gk.get("nadi")),
-                    ("Yoni", gk.get("yoni")),
-                    ("Varna", gk.get("varna")),
-                    ("Vashya", gk.get("vashya")),
-                    ("Vargu", gk.get("vargu")),
-                ]
-            )
-        )
-    else:
-        story.append(Paragraph("Gana Kutami data not provided.", body))
-    story.append(Spacer(1, 6 * mm))
-
-    # 3) Ghata Kutami (NEW)
-    story.append(_section_title("3) Ghata Kutami"))
-    gh = data.get("ghataKutami") or data.get("ghata_kutami") or {}
-    if _has_any_value(gh):
-        story.append(
-            _kv_table(
-                [
-                    ("Ghata Chakram", gh.get("ghataChakram") or gh.get("ghata_chakram")),
-                    ("Status", gh.get("status")),
-                    ("Result", gh.get("result")),
-                    ("Notes", gh.get("notes")),
-                ]
-            )
-        )
-    else:
-        story.append(Paragraph("Ghata Kutami data not provided.", body))
-    story.append(Spacer(1, 6 * mm))
-
-    # 4) Adrushta (NEW)
-    story.append(_section_title("4) Adrushta"))
-    ad = data.get("adrushta") or {}
-    if _has_any_value(ad):
-        story.append(
-            _kv_table(
-                [
-                    ("Adrushta Chakram", ad.get("chakra")),
-                    ("Score", ad.get("score")),
-                    ("Result", ad.get("result")),
-                    ("Notes", ad.get("notes")),
-                ]
-            )
-        )
-    else:
-        story.append(Paragraph("Adrushta data not provided.", body))
-
-    # 5) Charts (fresh page)
-    story.append(PageBreak())
-    story.append(_section_title("5) Charts"))
-    charts = data.get("charts") or {}
-    rasi_houses = charts.get("rasiHouses") or {}
-    nav_houses = charts.get("navamsaHouses") or {}
-
-    chart_row = Table(
-        [
-            [
-                SouthIndianChartFlowable(rasi_houses, title="Rasi Chart", size_mm=85),
-                SouthIndianChartFlowable(nav_houses, title="Navamsa Chart", size_mm=85),
-            ]
-        ],
-        colWidths=[95 * mm, 95 * mm],
-    )
-    chart_row.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("BACKGROUND", (0, 0), (-1, -1), CREAM),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-            ]
-        )
-    )
-    story.append(KeepTogether([chart_row, Spacer(1, 6 * mm)]))
+    
 
     # 6) Cusps
     story.append(PageBreak())
