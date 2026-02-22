@@ -12,13 +12,9 @@ def on_page(canvas, doc, meta):
     canvas.rect(0, 0, width, height, stroke=0, fill=1)
 
     # Header
-    canvas.setFillColor(colors.HexColor("#3E2723"))
-    canvas.setFont("Helvetica-Bold", 10)
-    canvas.drawCentredString(
-        width / 2,
-        height - 12,
-        "Pro KP Astrology"
-    )
+    canvas.setFont("Helvetica-Bold", 11)
+canvas.setFillColor(colors.HexColor("#7B1E1E"))
+canvas.drawCentredString(width / 2, height - 14, "🕉 PRO KP ASTROLOGY 🕉")
 
     # Footer
     canvas.setFont("Helvetica", 9)

@@ -34,7 +34,7 @@ def _kv_table(rows: List[Tuple[str, Any]]) -> Table:
         TableStyle(
             [
                 ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("FONTSIZE", (0, 0), (-1, 0), 10.5),
                 ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#333333")),
                 ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#111111")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -54,14 +54,14 @@ def _section_title(text: str) -> Paragraph:
     styles = getSampleStyleSheet()
     st = ParagraphStyle(
         "SecTitle",
-        parent=styles["Heading3"],
+        parent=styles["Heading2"],
         fontName="Helvetica-Bold",
-        fontSize=11,
-        textColor=colors.HexColor("#121212"),
-        spaceBefore=6,
-        spaceAfter=6,
+        fontSize=14,  # bigger
+        textColor=colors.HexColor("#B8860B"),  # gold
+        spaceBefore=10,
+        spaceAfter=8,
     )
-    return Paragraph(text, st)
+    return Paragraph(f"🕉 {text}", st)
 
 
 def _coerce_house_map(houses: Dict[Any, Any]) -> Dict[int, str]:
@@ -106,8 +106,8 @@ class SouthIndianChartFlowable(Flowable):
         c.drawString(x, y + self.size + 4 * mm, self.title)
 
         # Outer square
-        c.setStrokeColor(colors.HexColor("#222222"))
-        c.setLineWidth(1)
+        c.setStrokeColor(colors.HexColor("#B8860B"))  # gold border
+c.setLineWidth(1.2)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
         # 4x4 grid
@@ -150,13 +150,13 @@ class SouthIndianChartFlowable(Flowable):
 def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
     styles = getSampleStyleSheet()
     body = ParagraphStyle(
-        "Body",
-        parent=styles["BodyText"],
-        fontName="Helvetica",
-        fontSize=9.5,
-        leading=12,
-        textColor=colors.HexColor("#222222"),
-    )
+    "Body",
+    parent=styles["BodyText"],
+    fontName="Helvetica",
+    fontSize=11,      # was 9.5
+    leading=14,
+    textColor=colors.HexColor("#222222"),
+)
 
     doc = SimpleDocTemplate(
         file_path,
@@ -246,7 +246,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("FONTSIZE", (0, 0), (-1, 0), 9),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
-                    ("FONTSIZE", (0, 1), (-1, -1), 8.8),
+                    ("FONTSIZE", (0, 1), (-1, -1), 10.5),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 5),
@@ -285,7 +285,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#121212")),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 9),
+                    ("FONTSIZE", (0, 1), (-1, -1), 10.5),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
                     ("FONTSIZE", (0, 1), (-1, -1), 8.8),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
@@ -340,7 +340,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
-                    ("FONTSIZE", (0, 1), (-1, -1), 8.8),
+                    ("FONTSIZE", (0, 1), (-1, -1), 10.5),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 5),
