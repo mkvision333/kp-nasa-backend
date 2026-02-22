@@ -106,7 +106,7 @@ class SouthIndianChartFlowable(Flowable):
     ✅ Mesham is always TOP-LEFT 2nd box, clockwise order.
     """
 
-     def draw(self):
+        def draw(self):
         c = self.canv
         x = 0
         y = 0
@@ -116,35 +116,33 @@ class SouthIndianChartFlowable(Flowable):
         c.setFillColor(colors.HexColor("#111111"))
         c.drawString(x, y + self.size + 4 * mm, self.title)
 
-        step = self.size / 4.0  # 4x4 reference grid cell size
+        # Layout
+        step = self.size / 4.0  # each cell size (4x4 reference grid)
 
-        # Outer border
-        c.setStrokeColor(GOLD)
-        c.setLineWidth(1.2)
+        # ✅ Outer decorative frame only
+        c.setStrokeColor(colors.HexColor("#B8860B"))  # gold
+        c.setLineWidth(1.4)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
-        # ✅ Draw ONLY 12 perimeter boxes (no center 4 boxes, no grid lines)
+        # ✅ 12 boxes ONLY (no middle grid lines, no center boxes)
+        # box positions in a 4x4 system BUT we draw ONLY perimeter cells
+        # top row (cy=3): cx=0..3
+        # bottom row (cy=0): cx=0..3
+        # left col middle: (0,1),(0,2)
+        # right col middle: (3,1),(3,2)
         perimeter_cells = set()
-        # top + bottom rows
         for cx in range(4):
             perimeter_cells.add((cx, 3))
             perimeter_cells.add((cx, 0))
-        # left + right middle cells
         perimeter_cells.add((0, 1))
         perimeter_cells.add((0, 2))
         perimeter_cells.add((3, 1))
         perimeter_cells.add((3, 2))
 
-        c.setStrokeColor(GOLD)
-        c.setLineWidth(1.0)
-        for (cx, cy) in perimeter_cells:
-            ox = x + step * cx
-            oy = y + step * cy
-            c.rect(ox, oy, step, step, stroke=1, fill=0)
-
-        # 1 at TOP row 2nd box (clockwise)
+        # ✅ South Indian sign placement (Mesha top row 2nd box)
+        # 1..12 clockwise
         house_pos = {
-            1: (1, 3),
+            1: (1, 3),   # Mesham (top row 2nd)
             2: (2, 3),
             3: (3, 3),
             4: (3, 2),
@@ -158,28 +156,51 @@ class SouthIndianChartFlowable(Flowable):
             12: (0, 3),
         }
 
-        # Text
+        # ✅ Draw the 12 house boxes
+        c.setLineWidth(1.0)
+        c.setStrokeColor(colors.HexColor("#B8860B"))  # gold box borders
+
+        for (cx, cy) in sorted(perimeter_cells):
+            ox = x + step * cx
+            oy = y + step * cy
+            c.rect(ox, oy, step, step, stroke=1, fill=0)
+
+        # ✅ Fill text inside the correct 12 boxes
+        c.setFont("Helvetica", 8.2)
         c.setFillColor(colors.HexColor("#111111"))
 
         for house, (cx, cy) in house_pos.items():
-            ox = x + step * cx
-            oy = y + step * cy
             txt = str(self.houses.get(house, "")).strip()
 
-            # house number
+            ox = x + step * cx
+            oy = y + step * cy
+
+            # House number small (top-left inside box)
             c.setFont("Helvetica-Bold", 7.2)
             c.drawString(ox + 2 * mm, oy + step - 5 * mm, str(house))
 
-            # planets text (2 lines max)
+            # Planets text (wrap-ish: split by space into 2 lines max)
             if txt:
+                c.setFont("Helvetica", 8.2)
                 parts = txt.split()
                 line1 = " ".join(parts[:6])
                 line2 = " ".join(parts[6:12]) if len(parts) > 6 else ""
-
-                c.setFont("Helvetica", 8.0)
                 c.drawString(ox + 2 * mm, oy + step - 10 * mm, line1)
                 if line2:
                     c.drawString(ox + 2 * mm, oy + step - 15 * mm, line2)
+
+        # ✅ Center should look empty (no lines, no boxes, nothing)
+
+
+def _has_any_value(d: Dict[str, Any]) -> bool:
+    if not isinstance(d, dict):
+        return False
+    for _, v in d.items():
+        if v is None:
+            continue
+        if str(v).strip():
+            return True
+    return False
 
 
 def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
