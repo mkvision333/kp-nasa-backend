@@ -1,6 +1,9 @@
+# ✅ app/pdf_engine/templates/birth_chart.py  ✅ FULL REPLACE
 from __future__ import annotations
 
 from typing import Dict, Any, List, Tuple
+
+import re
 
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -9,6 +12,8 @@ from reportlab.platypus import (
     Table,
     TableStyle,
     Flowable,
+    KeepTogether,
+    PageBreak,
 )
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -19,12 +24,35 @@ from ..common.header_footer import on_page
 from app.pdf_engine.common.cover_page import build_cover_page
 
 CREAM = colors.HexColor("#FFF6E6")
-CREAM2 = colors.HexColor("#FFFBF2")  # light alternate
+CREAM2 = colors.HexColor("#FFFBF2")  # alternate
+GOLD = colors.HexColor("#B8860B")
+
+
 def _safe(v: Any, dash: str = "—") -> str:
     if v is None:
         return dash
     s = str(v).strip()
     return s if s else dash
+
+
+def _fmt_deg_short(v: Any) -> str:
+    """
+    Degree formatting like: 12°34'
+    Accepts strings like:
+      12°34'56", 12 34 56, 12:34:56, 12°34'
+    """
+    s = str(v or "").strip()
+    if not s:
+        return "—"
+    nums = re.findall(r"\d+", s)
+    if len(nums) >= 2:
+        d = int(nums[0])
+        m = int(nums[1])
+        return f"{d}°{str(m).zfill(2)}'"
+    if len(nums) == 1:
+        d = int(nums[0])
+        return f"{d}°00'"
+    return "—"
 
 
 def _kv_table(rows: List[Tuple[str, Any]]) -> Table:
@@ -34,7 +62,7 @@ def _kv_table(rows: List[Tuple[str, Any]]) -> Table:
         TableStyle(
             [
                 ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, 0), 10.5),
+                ("FONTSIZE", (0, 0), (-1, -1), 10.5),
                 ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#333333")),
                 ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#111111")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -56,8 +84,8 @@ def _section_title(text: str) -> Paragraph:
         "SecTitle",
         parent=styles["Heading2"],
         fontName="Helvetica-Bold",
-        fontSize=14,  # bigger
-        textColor=colors.HexColor("#B8860B"),  # gold
+        fontSize=14,
+        textColor=GOLD,
         spaceBefore=10,
         spaceAfter=8,
     )
@@ -65,9 +93,6 @@ def _section_title(text: str) -> Paragraph:
 
 
 def _coerce_house_map(houses: Dict[Any, Any]) -> Dict[int, str]:
-    """
-    JSON keys arrive as strings ("1".."12"). Convert to int.
-    """
     out: Dict[int, str] = {}
     if not isinstance(houses, dict):
         return out
@@ -83,8 +108,8 @@ def _coerce_house_map(houses: Dict[Any, Any]) -> Dict[int, str]:
 
 class SouthIndianChartFlowable(Flowable):
     """
-    Simple South Indian chart box (12 houses).
-    houses: {1: "Su Mo", 2: "Ma", ...} OR {"1":"Su Mo", ...}
+    South Indian chart (12 houses) with Mesham at TOP LEFT 2nd box and clockwise order.
+    houses: {1:"Su Mo", 2:"Ma", ...} or {"1":"Su Mo", ...}
     """
 
     def __init__(self, houses: Dict[int, str], title: str = "Rasi Chart", size_mm: int = 90):
@@ -105,9 +130,8 @@ class SouthIndianChartFlowable(Flowable):
         c.setFillColor(colors.HexColor("#111111"))
         c.drawString(x, y + self.size + 4 * mm, self.title)
 
-        # Outer square
-        # Outer square
-        c.setStrokeColor(colors.HexColor("#B8860B"))  # gold border
+        # Outer square (gold)
+        c.setStrokeColor(GOLD)
         c.setLineWidth(1.2)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
@@ -119,21 +143,22 @@ class SouthIndianChartFlowable(Flowable):
             c.line(x + step * i, y, x + step * i, y + self.size)
             c.line(x, y + step * i, x + self.size, y + step * i)
 
-        # Approx South Indian placement
+        # ✅ Placement: 1 at TOP row 2nd box (clockwise)
+        # Coordinates are (col,row) in 0..3 where row=0 is bottom, row=3 is top
         house_pos = {
-    1: (1, 3),   # Top row, 2nd box
-    2: (2, 3),
-    3: (3, 3),
-    4: (3, 2),
-    5: (3, 1),
-    6: (3, 0),
-    7: (2, 0),
-    8: (1, 0),
-    9: (0, 0),
-    10: (0, 1),
-    11: (0, 2),
-    12: (0, 3),
-}
+            1: (1, 3),
+            2: (2, 3),
+            3: (3, 3),
+            4: (3, 2),
+            5: (3, 1),
+            6: (3, 0),
+            7: (2, 0),
+            8: (1, 0),
+            9: (0, 0),
+            10: (0, 1),
+            11: (0, 2),
+            12: (0, 3),
+        }
 
         c.setFont("Helvetica", 7.5)
         c.setFillColor(colors.HexColor("#111111"))
@@ -144,20 +169,19 @@ class SouthIndianChartFlowable(Flowable):
                 continue
             ox = x + step * cx
             oy = y + step * cy
-            # House label + planets
             c.drawString(ox + 2 * mm, oy + step - 6 * mm, f"{house}: {txt}")
 
 
 def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
     styles = getSampleStyleSheet()
     body = ParagraphStyle(
-    "Body",
-    parent=styles["BodyText"],
-    fontName="Helvetica",
-    fontSize=11,      # was 9.5
-    leading=14,
-    textColor=colors.HexColor("#222222"),
-)
+        "Body",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=11,
+        leading=14,
+        textColor=colors.HexColor("#222222"),
+    )
 
     doc = SimpleDocTemplate(
         file_path,
@@ -171,7 +195,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     )
 
     story: List[Any] = []
-    
+
     # Cover Page
     build_cover_page(story, data.get("userName", ""))
 
@@ -195,43 +219,64 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     )
     story.append(Spacer(1, 6 * mm))
 
-    # 2) Charts
+    # 2) Gana Kutami (NEW)
+    story.append(_section_title("2) Gana Kutami"))
+    gk = data.get("ganaKutami") or data.get("gana_kutami") or {}
+    story.append(
+        _kv_table(
+            [
+                ("Janma Nakshatram", gk.get("janmaNakshatra") or gk.get("janma_nakshatra")),
+                ("Pada", gk.get("pada")),
+                ("Ganam", gk.get("gana")),
+                ("Nadi", gk.get("nadi")),
+                ("Yoni", gk.get("yoni")),
+                ("Varna", gk.get("varna")),
+                ("Vashya", gk.get("vashya")),
+                ("Vargu", gk.get("vargu")),
+            ]
+        )
+    )
+    story.append(Spacer(1, 6 * mm))
+
+    # 3) Charts (force charts to start fresh page)
     story.append(PageBreak())
-    story.append(_section_title("2) Charts"))
+
     charts = data.get("charts") or {}
     rasi_houses = charts.get("rasiHouses") or {}
     nav_houses = charts.get("navamsaHouses") or {}
 
-    chart_row = Table(
+    charts_block = KeepTogether(
         [
-            [
-                SouthIndianChartFlowable(rasi_houses, title="Rasi Chart", size_mm=85),
-                SouthIndianChartFlowable(nav_houses, title="Navamsa Chart", size_mm=85),
-            ]
-        ],
-        colWidths=[95 * mm, 95 * mm],
+            _section_title("3) Charts"),
+            Table(
+                [
+                    [
+                        SouthIndianChartFlowable(rasi_houses, title="Rasi Chart", size_mm=85),
+                        SouthIndianChartFlowable(nav_houses, title="Navamsa Chart", size_mm=85),
+                    ]
+                ],
+                colWidths=[95 * mm, 95 * mm],
+                style=TableStyle(
+                    [
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("BACKGROUND", (0, 0), (-1, -1), CREAM),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                        ("TOPPADDING", (0, 0), (-1, -1), 0),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                    ]
+                ),
+            ),
+            Spacer(1, 6 * mm),
+        ]
     )
-    chart_row.setStyle(
-    TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("BACKGROUND", (0, 0), (-1, -1), CREAM),   # ✅ important
-        ("LEFTPADDING", (0,0), (-1,-1), 0),
-        ("RIGHTPADDING", (0,0), (-1,-1), 0),
-        ("TOPPADDING", (0,0), (-1,-1), 0),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 0),
-    ])
-)
-    from reportlab.platypus import KeepTogether
+    story.append(charts_block)
 
-    story.append(
-        KeepTogether([
-            chart_row,
-            Spacer(1, 6 * mm)
-        ])
-    )
-    # 3) Cusps
+    # ✅ Tables must start on new pages (avoid splitting under charts)
+    # 4) Cusps
     story.append(PageBreak())
-    story.append(_section_title("3) Cusps"))
+    story.append(_section_title("4) Cusps"))
+
     cusps = data.get("cusps") or []
     if cusps:
         cusp_data = [["House", "Sign", "Degree", "Star Lord", "Sub Lord"]]
@@ -240,7 +285,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                 [
                     _safe(c.get("house")),
                     _safe(c.get("sign")),
-                    _safe(c.get("deg")),
+                    _fmt_deg_short(c.get("deg")),
                     _safe(c.get("starLord")),
                     _safe(c.get("subLord")),
                 ]
@@ -269,9 +314,10 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
         story.append(Paragraph("Cusps data not provided.", body))
     story.append(Spacer(1, 6 * mm))
 
-    # 4) Planets
+    # 5) Planets
     story.append(PageBreak())
-    story.append(_section_title("4) Planets"))
+    story.append(_section_title("5) Planets"))
+
     planets = data.get("planets") or []
     if planets:
         p_data = [["Planet", "Sign", "Degree", "Nakshatra", "Pada", "Star Lord", "Sub Lord"]]
@@ -280,7 +326,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                 [
                     _safe(p.get("name")),
                     _safe(p.get("sign")),
-                    _safe(p.get("deg")),
+                    _fmt_deg_short(p.get("deg")),
                     _safe(p.get("nakshatra")),
                     _safe(p.get("pada")),
                     _safe(p.get("starLord")),
@@ -294,8 +340,9 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#121212")),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 1), (-1, -1), 10.5),
+                    ("FONTSIZE", (0, 0), (-1, 0), 9),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
+                    ("FONTSIZE", (0, 1), (-1, -1), 10.5),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 5),
@@ -310,9 +357,10 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
         story.append(Paragraph("Planets data not provided.", body))
     story.append(Spacer(1, 6 * mm))
 
-    # 5) Dasha (Current)
+    # 6) Dasha (Current)
     story.append(PageBreak())
-    story.append(_section_title("5) Dasha (Current)"))
+    story.append(_section_title("6) Dasha (Current)"))
+
     dasha = data.get("dasha") or {}
     story.append(
         _kv_table(
@@ -327,9 +375,10 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     )
     story.append(Spacer(1, 6 * mm))
 
-    # 6) Mini Bhava Phalithalu
+    # 7) Mini Bhava Phalithalu
     story.append(PageBreak())
-    story.append(_section_title("6) Mini Bhava Phalithalu"))
+    story.append(_section_title("7) Mini Bhava Phalithalu"))
+
     bhava = data.get("bhavaPhal") or []
     if bhava:
         b_data = [["House", "Good", "Careful", "Notes"]]
@@ -350,6 +399,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
+                    ("FONTSIZE", (0, 0), (-1, 0), 9),
                     ("FONTSIZE", (0, 1), (-1, -1), 10.5),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
