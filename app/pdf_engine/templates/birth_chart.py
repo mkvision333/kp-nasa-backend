@@ -18,7 +18,8 @@ from reportlab.lib import colors
 from ..common.header_footer import on_page
 from app.pdf_engine.common.cover_page import build_cover_page
 
-
+CREAM = colors.HexColor("#FFF6E6")
+CREAM2 = colors.HexColor("#FFFBF2")  # light alternate
 def _safe(v: Any, dash: str = "—") -> str:
     if v is None:
         return dash
@@ -172,7 +173,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     
     # Cover Page
     build_cover_page(story, data.get("userName", ""))
-    
+
     # 1) Birth Details
     story.append(_section_title("1) Birth Details"))
     birth = data.get("birth") or {}
@@ -208,7 +209,16 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
         ],
         colWidths=[95 * mm, 95 * mm],
     )
-    chart_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
+    chart_row.setStyle(
+    TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("BACKGROUND", (0, 0), (-1, -1), CREAM),   # ✅ important
+        ("LEFTPADDING", (0,0), (-1,-1), 0),
+        ("RIGHTPADDING", (0,0), (-1,-1), 0),
+        ("TOPPADDING", (0,0), (-1,-1), 0),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 0),
+    ])
+)
     story.append(chart_row)
     story.append(Spacer(1, 6 * mm))
 
@@ -237,7 +247,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("FONTSIZE", (0, 0), (-1, 0), 9),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
                     ("FONTSIZE", (0, 1), (-1, -1), 8.8),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 5),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 5),
@@ -278,7 +288,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("FONTSIZE", (0, 0), (-1, 0), 9),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
                     ("FONTSIZE", (0, 1), (-1, -1), 8.8),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 5),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 5),
@@ -331,7 +341,7 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                     ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
                     ("FONTSIZE", (0, 1), (-1, -1), 8.8),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 5),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 5),
