@@ -1,5 +1,3 @@
-# app/pdf_engine/templates/birth_chart.py  ✅ FULL REPLACE
-
 from __future__ import annotations
 
 from typing import Dict, Any, List, Tuple
@@ -24,10 +22,10 @@ from ..common.header_footer import on_page
 from app.pdf_engine.common.cover_page import build_cover_page
 
 
-# Theme
 CREAM = colors.HexColor("#FFF6E6")
 CREAM2 = colors.HexColor("#FFFBF2")
 GOLD = colors.HexColor("#B8860B")
+TXT = colors.HexColor("#111111")
 
 
 def _safe(v: Any, dash: str = "—") -> str:
@@ -38,33 +36,10 @@ def _safe(v: Any, dash: str = "—") -> str:
 
 
 def _fmt_deg_short(v: Any) -> str:
-    """
-    Degree formatting like 12°34' (best-effort from string/number).
-    Accepts: "12 34", "12°34'", "12.56", 12.56 etc.
-    """
-    if v is None:
-        return "—"
-    s = str(v).strip()
+    """Degree formatting like 12°34' (best-effort)."""
+    s = str(v or "").strip()
     if not s:
         return "—"
-
-    # If it looks like float degrees (e.g., 12.56), convert to deg + minutes
-    mfloat = re.findall(r"-?\d+(?:\.\d+)?", s)
-    if mfloat:
-        try:
-            val = float(mfloat[0])
-            sign = "-" if val < 0 else ""
-            val = abs(val)
-            d = int(val)
-            mins = int(round((val - d) * 60))
-            if mins >= 60:
-                d += 1
-                mins -= 60
-            return f"{sign}{d}°{str(mins).zfill(2)}'"
-        except Exception:
-            pass
-
-    # Otherwise extract first 2 integers
     nums = re.findall(r"\d+", s)
     if len(nums) >= 2:
         d = int(nums[0])
@@ -76,16 +51,29 @@ def _fmt_deg_short(v: Any) -> str:
     return "—"
 
 
+def _section_title(text: str) -> Paragraph:
+    styles = getSampleStyleSheet()
+    st = ParagraphStyle(
+        "SecTitle",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=14,
+        textColor=GOLD,
+        spaceBefore=6,
+        spaceAfter=8,
+    )
+    return Paragraph(f"🕉 {text}", st)
+
+
 def _kv_table(rows: List[Tuple[str, Any]]) -> Table:
     data = [[k, _safe(v)] for k, v in rows]
-    t = Table(data, colWidths=[45 * mm, 140 * mm])
+    t = Table(data, colWidths=[50 * mm, 135 * mm])
     t.setStyle(
         TableStyle(
             [
                 ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
                 ("FONTSIZE", (0, 0), (-1, -1), 10.5),
-                ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#333333")),
-                ("TEXTCOLOR", (1, 0), (1, -1), colors.HexColor("#111111")),
+                ("TEXTCOLOR", (0, 0), (-1, -1), TXT),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("ROWBACKGROUNDS", (0, 0), (-1, -1), [CREAM2, CREAM]),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
@@ -97,20 +85,6 @@ def _kv_table(rows: List[Tuple[str, Any]]) -> Table:
         )
     )
     return t
-
-
-def _section_title(text: str) -> Paragraph:
-    styles = getSampleStyleSheet()
-    st = ParagraphStyle(
-        "SecTitle",
-        parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
-        fontSize=14,
-        textColor=GOLD,
-        spaceBefore=10,
-        spaceAfter=8,
-    )
-    return Paragraph(f"🕉 {text}", st)
 
 
 def _coerce_house_map(houses: Dict[Any, Any]) -> Dict[int, str]:
@@ -127,25 +101,14 @@ def _coerce_house_map(houses: Dict[Any, Any]) -> Dict[int, str]:
     return out
 
 
-def _has_any_value(d: Dict[str, Any]) -> bool:
-    if not isinstance(d, dict):
-        return False
-    for _, v in d.items():
-        if v is None:
-            continue
-        if str(v).strip():
-            return True
-    return False
-
-
 class SouthIndianChartFlowable(Flowable):
     """
-    ✅ South Indian chart (12 perimeter boxes only)
-    ✅ Mesham is always TOP row 2nd box, clockwise order
-    ✅ NO middle grid lines / NO center boxes
+    South Indian chart:
+    ✅ House 1 at TOP row 2nd box (clockwise)
+    ✅ Center 2x2 EMPTY (no middle grid lines)
     """
 
-    def __init__(self, houses: Dict[int, str], title: str = "Rasi Chart", size_mm: int = 90):
+    def __init__(self, houses: Dict[int, str], title: str = "Rasi Chart", size_mm: int = 88):
         super().__init__()
         self.houses = _coerce_house_map(houses or {})
         self.title = title
@@ -158,33 +121,37 @@ class SouthIndianChartFlowable(Flowable):
         x = 0
         y = 0
 
-        # Title
+        # title
         c.setFont("Helvetica-Bold", 10)
-        c.setFillColor(colors.HexColor("#111111"))
+        c.setFillColor(TXT)
         c.drawString(x, y + self.size + 4 * mm, self.title)
 
-        step = self.size / 4.0
-
-        # Outer border
+        # outer square
         c.setStrokeColor(GOLD)
         c.setLineWidth(1.2)
         c.rect(x, y, self.size, self.size, stroke=1, fill=0)
 
-        # ✅ Draw ONLY 12 perimeter cells
-        perimeter_cells = set()
-        for cx in range(4):
-            perimeter_cells.add((cx, 3))  # top
-            perimeter_cells.add((cx, 0))  # bottom
-        perimeter_cells.update({(0, 1), (0, 2), (3, 1), (3, 2)})  # sides
+        step = self.size / 4.0
 
-        c.setStrokeColor(GOLD)
-        c.setLineWidth(1.0)
-        for (cx, cy) in perimeter_cells:
-            ox = x + step * cx
-            oy = y + step * cy
-            c.rect(ox, oy, step, step, stroke=1, fill=0)
+        # draw ONLY perimeter grid, keep center empty
+        c.setLineWidth(0.7)
+        c.setStrokeColor(colors.HexColor("#444444"))
 
-        # 1 at TOP row 2nd box (clockwise)
+        # full lines at 1*step and 3*step (outer ring separators)
+        for i in (1, 3):
+            c.line(x + step * i, y, x + step * i, y + self.size)
+            c.line(x, y + step * i, x + self.size, y + step * i)
+
+        # partial lines at 2*step (avoid the middle 2x2)
+        # vertical at 2*step: bottom band + top band only
+        c.line(x + step * 2, y, x + step * 2, y + step * 1)
+        c.line(x + step * 2, y + step * 3, x + step * 2, y + self.size)
+
+        # horizontal at 2*step: left band + right band only
+        c.line(x, y + step * 2, x + step * 1, y + step * 2)
+        c.line(x + step * 3, y + step * 2, x + self.size, y + step * 2)
+
+        # placement (1 at top row 2nd box, clockwise)
         house_pos = {
             1: (1, 3),
             2: (2, 3),
@@ -200,27 +167,33 @@ class SouthIndianChartFlowable(Flowable):
             12: (0, 3),
         }
 
-        c.setFillColor(colors.HexColor("#111111"))
+        c.setFont("Helvetica", 7.6)
+        c.setFillColor(TXT)
 
         for house, (cx, cy) in house_pos.items():
+            txt = str(self.houses.get(house, "")).strip()
+            if not txt:
+                continue
             ox = x + step * cx
             oy = y + step * cy
-            txt = str(self.houses.get(house, "")).strip()
+            c.drawString(ox + 2 * mm, oy + step - 6 * mm, f"{house}: {txt}")
 
-            # house number
-            c.setFont("Helvetica-Bold", 7.2)
-            c.drawString(ox + 2 * mm, oy + step - 5 * mm, str(house))
 
-            # planets (wrap into 2 lines max)
-            if txt:
-                parts = txt.split()
-                line1 = " ".join(parts[:6])
-                line2 = " ".join(parts[6:12]) if len(parts) > 6 else ""
-
-                c.setFont("Helvetica", 8.0)
-                c.drawString(ox + 2 * mm, oy + step - 10 * mm, line1)
-                if line2:
-                    c.drawString(ox + 2 * mm, oy + step - 15 * mm, line2)
+def _table_style_header() -> List[Tuple]:
+    return [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#121212")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 9),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
+        ("FONTSIZE", (0, 1), (-1, -1), 10.2),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
 
 
 def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, Any]) -> None:
@@ -247,17 +220,23 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
 
     story: List[Any] = []
 
-    # Cover Page
+    # 0) Cover Page (this function should add its own PageBreak at end)
     build_cover_page(story, data.get("userName", ""))
 
-    # 1) Birth Details
-    story.append(PageBreak())
+    # 1) Birth Details (MUST start on next page)
     story.append(_section_title("1) Birth Details"))
     birth = data.get("birth") or {}
+
+    # optional parent names if you pass later
+    father = (birth.get("fatherName") if isinstance(birth, dict) else None) or data.get("fatherName")
+    mother = (birth.get("motherName") if isinstance(birth, dict) else None) or data.get("motherName")
+
     story.append(
         _kv_table(
             [
                 ("Name", data.get("userName") or birth.get("name")),
+                ("Father Name", father),
+                ("Mother Name", mother),
                 ("Gender", birth.get("gender")),
                 ("Date & Time", birth.get("datetime")),
                 ("Place", birth.get("place")),
@@ -269,11 +248,49 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
             ]
         )
     )
-    story.append(Spacer(1, 6 * mm))
 
-    # 2) Charts (always start fresh page, keep together)
+    # 2) Gana / Ghata / Adrushta (separate page)
     story.append(PageBreak())
-    story.append(_section_title("2) Charts"))
+    story.append(_section_title("2) Gana Kutami • Ghata Kutami • Adrushta"))
+
+    # Expect these keys (frontend payload should send them)
+    gana = data.get("ganaKutami") or {}
+    ghata = data.get("ghataKutami") or {}
+    adru = data.get("adrushta") or {}
+
+    # If nothing present, show a clear note (not empty)
+    if not any([isinstance(gana, dict) and any(str(v or "").strip() for v in gana.values()),
+                isinstance(ghata, dict) and any(str(v or "").strip() for v in ghata.values()),
+                isinstance(adru, dict) and any(str(v or "").strip() for v in adru.values())]):
+        story.append(Paragraph("Gana/Ghata/Adrushta data not provided in payload.", body))
+    else:
+        # Gana
+        story.append(Paragraph("<b>Gana Kutami</b>", body))
+        if isinstance(gana, dict) and gana:
+            story.append(_kv_table([(k, v) for k, v in gana.items()]))
+        else:
+            story.append(Paragraph("—", body))
+        story.append(Spacer(1, 4 * mm))
+
+        # Ghata
+        story.append(Paragraph("<b>Ghata Kutami</b>", body))
+        if isinstance(ghata, dict) and ghata:
+            story.append(_kv_table([(k, v) for k, v in ghata.items()]))
+        else:
+            story.append(Paragraph("—", body))
+        story.append(Spacer(1, 4 * mm))
+
+        # Adrushta
+        story.append(Paragraph("<b>Adrushta</b>", body))
+        if isinstance(adru, dict) and adru:
+            story.append(_kv_table([(k, v) for k, v in adru.items()]))
+        else:
+            story.append(Paragraph("—", body))
+
+    # 3) Charts (separate page, never half-page)
+    story.append(PageBreak())
+    story.append(_section_title("3) Charts"))
+
     charts = data.get("charts") or {}
     rasi_houses = charts.get("rasiHouses") or {}
     nav_houses = charts.get("navamsaHouses") or {}
@@ -281,8 +298,8 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     chart_row = Table(
         [
             [
-                SouthIndianChartFlowable(rasi_houses, title="Rasi Chart", size_mm=85),
-                SouthIndianChartFlowable(nav_houses, title="Navamsa Chart", size_mm=85),
+                SouthIndianChartFlowable(rasi_houses, title="Rasi Chart", size_mm=88),
+                SouthIndianChartFlowable(nav_houses, title="Navamsa Chart", size_mm=88),
             ]
         ],
         colWidths=[95 * mm, 95 * mm],
@@ -301,43 +318,6 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
     )
     story.append(KeepTogether([chart_row, Spacer(1, 6 * mm)]))
 
-    # 3) Gana Kutami / Ghata Kutami / Adrushta (if provided)
-    # NOTE: backend may send these under different keys; we try common ones.
-    def _pick(*keys: str) -> Dict[str, Any]:
-        for k in keys:
-            v = data.get(k)
-            if isinstance(v, dict) and _has_any_value(v):
-                return v
-        return {}
-
-    gana = _pick("ganaKutami", "gana_kutami", "gana")
-    ghata = _pick("ghataKutami", "ghata_kutami", "ghata")
-    adrushta = _pick("adrushta", "adrushtaKutami", "adrushta_kutami")
-
-    if gana or ghata or adrushta:
-        # keep these together; if too big, it will flow but starts here under charts
-        blocks: List[Any] = []
-        blocks.append(_section_title("3) Gana / Ghata / Adrushta"))
-
-        if gana:
-            blocks.append(Paragraph("<b>Gana Kutami</b>", body))
-            blocks.append(_kv_table([(k, v) for k, v in gana.items()]))
-            blocks.append(Spacer(1, 4 * mm))
-
-        if ghata:
-            blocks.append(Paragraph("<b>Ghata Kutami</b>", body))
-            blocks.append(_kv_table([(k, v) for k, v in ghata.items()]))
-            blocks.append(Spacer(1, 4 * mm))
-
-        if adrushta:
-            blocks.append(Paragraph("<b>Adrushta</b>", body))
-            blocks.append(_kv_table([(k, v) for k, v in adrushta.items()]))
-
-        story.append(KeepTogether(blocks))
-    else:
-        # If nothing provided, show note (optional)
-        story.append(Paragraph("Gana/Ghata/Adrushta details not provided.", body))
-
     # 4) Cusps
     story.append(PageBreak())
     story.append(_section_title("4) Cusps"))
@@ -355,29 +335,12 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                 ]
             )
         t = Table(cusp_data, repeatRows=1, colWidths=[18 * mm, 28 * mm, 28 * mm, 55 * mm, 55 * mm])
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#121212")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 9),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
-                    ("FONTSIZE", (0, 1), (-1, -1), 10.5),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
-        )
+        t.setStyle(TableStyle(_table_style_header()))
         story.append(t)
     else:
         story.append(Paragraph("Cusps data not provided.", body))
 
-    # 5) Planets (degrees shown)
+    # 5) Planets
     story.append(PageBreak())
     story.append(_section_title("5) Planets"))
     planets = data.get("planets") or []
@@ -396,29 +359,12 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
                 ]
             )
         t = Table(p_data, repeatRows=1, colWidths=[18 * mm, 22 * mm, 22 * mm, 35 * mm, 12 * mm, 40 * mm, 40 * mm])
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#121212")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("FONTSIZE", (0, 0), (-1, 0), 9),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
-                    ("FONTSIZE", (0, 1), (-1, -1), 10.5),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
-        )
+        t.setStyle(TableStyle(_table_style_header()))
         story.append(t)
     else:
         story.append(Paragraph("Planets data not provided.", body))
 
-    # 6) Dasha
+    # 6) Dasha (Current)
     story.append(PageBreak())
     story.append(_section_title("6) Dasha (Current)"))
     dasha = data.get("dasha") or {}
@@ -434,40 +380,16 @@ def build_birth_chart_pdf(file_path: str, data: Dict[str, Any], meta: Dict[str, 
         )
     )
 
-    # 7) Mini Bhava
+    # 7) Mini Bhava Phalithalu
     story.append(PageBreak())
     story.append(_section_title("7) Mini Bhava Phalithalu"))
     bhava = data.get("bhavaPhal") or []
     if bhava:
         b_data = [["House", "Good", "Careful", "Notes"]]
         for b in bhava:
-            b_data.append(
-                [
-                    _safe(b.get("house")),
-                    _safe(b.get("good")),
-                    _safe(b.get("bad")),
-                    _safe(b.get("notes")),
-                ]
-            )
+            b_data.append([_safe(b.get("house")), _safe(b.get("good")), _safe(b.get("bad")), _safe(b.get("notes"))])
         t = Table(b_data, repeatRows=1, colWidths=[16 * mm, 55 * mm, 55 * mm, 64 * mm])
-        t.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#121212")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
-                    ("FONTSIZE", (0, 0), (-1, 0), 9),
-                    ("FONTSIZE", (0, 1), (-1, -1), 10.5),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [CREAM2, CREAM]),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
-        )
+        t.setStyle(TableStyle(_table_style_header()))
         story.append(t)
     else:
         story.append(Paragraph("Bhava phalithalu data not provided.", body))
