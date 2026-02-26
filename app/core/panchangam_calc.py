@@ -480,25 +480,30 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         return hit
 
     zone = ZoneInfo(tz)
+
     try:
-    dt = datetime.fromisoformat(datetimeLocal.replace("Z", "+00:00"))
-if dt.tzinfo is None:
-    dt_local = dt.replace(tzinfo=zone)
-else:
-    dt_local = dt.astimezone(zone)
+        dt = datetime.fromisoformat(datetimeLocal.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt_local = dt.replace(tzinfo=zone)
+        else:
+            dt_local = dt.astimezone(zone)
     except Exception:
         dt_local = datetime.now(tz=zone)
+
     local_d = dt_local.date()
 
-    sunrise_utc, sunset_utc = _sunrise_sunset_utc_for_local_date(local_d, tz, float(lat), float(lon))
-    next_sunrise_utc, _ = _sunrise_sunset_utc_for_local_date(local_d + timedelta(days=1), tz, float(lat), float(lon))
+    sunrise_utc, sunset_utc = _sunrise_sunset_utc_for_local_date(
+        local_d, tz, float(lat), float(lon)
+    )
+    next_sunrise_utc, _ = _sunrise_sunset_utc_for_local_date(
+        local_d + timedelta(days=1), tz, float(lat), float(lon)
+    )
 
     sunrise_local = sunrise_utc.astimezone(zone)
     sunset_local = sunset_utc.astimezone(zone)
     next_sunrise_local = next_sunrise_utc.astimezone(zone)
 
     vaara = VAARA_EN[local_d.weekday()]
-
     # Kala blocks
     rahu_a, rahu_b = _kala_segment(sunrise_utc, sunset_utc, _RAHU_IDX.get(vaara, 2))
     yama_a, yama_b = _kala_segment(sunrise_utc, sunset_utc, _YAMA_IDX.get(vaara, 5))
