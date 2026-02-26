@@ -8,6 +8,7 @@ import math
 import time
 
 from app.core.nasa_ephemeris import get_planets_ecliptic
+from app.core.ayanamsa_exact import get_ayanamsa_deg
 
 # ---------------------------
 # Constants / Names
@@ -116,11 +117,8 @@ _PANCH_CACHE: Dict[str, Dict[str, Any]] = {}
 _PANCH_TTL_SEC = 12 * 60 * 60  # 12 hours
 
 def _panch_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayan_deg: float) -> str:
-    try:
-        d = datetime.fromisoformat(datetimeLocal).date()
-    except Exception:
-        d = datetime.now().date()
-    return f"{d.isoformat()}|{tz}|{float(lat):.4f}|{float(lon):.4f}|{float(ayan_deg):.4f}"
+    # ✅ include full datetimeLocal (not just date)
+    return f"{datetimeLocal}|{tz}|{float(lat):.4f}|{float(lon):.4f}|{float(ayan_deg):.6f}"
 
 def _cache_get(key: str):
     v = _PANCH_CACHE.get(key)
@@ -482,12 +480,18 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         return hit
 
     zone = ZoneInfo(tz)
-    try:
-        dt_local = datetime.fromisoformat(datetimeLocal).replace(tzinfo=zone)
-    except Exception:
-        dt_local = datetime.now(tz=zone)
-    local_d = dt_local.date()
 
+try:
+    dt = datetime.fromisoformat(datetimeLocal.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt_local = dt.replace(tzinfo=zone)
+    else:
+        dt_local = dt.astimezone(zone)
+except Exception:
+    dt_local = datetime.now(tz=zone)
+
+local_d = dt_local.date()
+    
     sunrise_utc, sunset_utc = _sunrise_sunset_utc_for_local_date(local_d, tz, float(lat), float(lon))
     next_sunrise_utc, _ = _sunrise_sunset_utc_for_local_date(local_d + timedelta(days=1), tz, float(lat), float(lon))
 
@@ -763,3 +767,121 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         }
         _cache_set(key, out)
         return out
+    
+
+def _jd_ut_from_dt(dt_utc: datetime) -> float:
+    # Julian day UT (simple & sufficient here)
+    # Algorithm: Fliegel–Van Flandern style
+    y = dt_utc.year
+    m = dt_utc.month
+    d = dt_utc.day + (dt_utc.hour + dt_utc.minute/60 + dt_utc.second/3600) / 24.0
+    if m <= 2:
+        y -= 1
+        m += 12
+    A = math.floor(y / 100)
+    B = 2 - A + math.floor(A / 4)
+    jd = math.floor(365.25 * (y + 4716)) + math.floor(30.6001 * (m + 1)) + d + B - 1524.5
+    return float(jd)
+
+def _tithi_idx_from_sid(sun_sid: float, moon_sid: float) -> int:
+    d = wrap360(moon_sid - sun_sid)
+    return int(math.floor(d / TITHI_SPAN)) + 1  # 1..30
+
+def _nak_idx_from_sid(moon_sid: float) -> int:
+    return int(math.floor(wrap360(moon_sid) / STAR_SPAN)) + 1  # 1..27
+
+def compute_day_base(local_d: date, tz: str, lat: float, lon: float, ayan_mode: str = "KP_OLD") -> Dict[str, Any]:
+    """
+    ✅ Batch-safe day base:
+    - sunrise/pradosha/nishitha tithi+nakshatra
+    - masa + adhika/nija bounds (your stable amavasya logic)
+    - NO global cache use (so generation is correct)
+    """
+    zone = ZoneInfo(tz)
+
+    sunrise_utc, sunset_utc = _sunrise_sunset_utc_for_local_date(local_d, tz, float(lat), float(lon))
+    next_sunrise_utc, _ = _sunrise_sunset_utc_for_local_date(local_d + timedelta(days=1), tz, float(lat), float(lon))
+
+    sunrise_local = sunrise_utc.astimezone(zone)
+    sunset_local = sunset_utc.astimezone(zone)
+
+    # decision points
+    pradosha_utc = sunset_utc + timedelta(minutes=60)                 # sunset + 1h
+    nishitha_utc = sunset_utc + (next_sunrise_utc - sunset_utc) / 2   # night midpoint
+
+    # ayanamsa at sunrise UT (good enough for day; you can also do at each point)
+    ayan_deg = get_ayanamsa_deg(_jd_ut_from_dt(sunrise_utc), ayan_mode)
+
+    fetch_sid = _make_nasa_fetcher(float(lat), float(lon), float(ayan_deg))
+
+    def snap(dt_utc: datetime) -> Dict[str, Any]:
+        sun_sid, moon_sid = fetch_sid(dt_utc)
+        ti = _tithi_idx_from_sid(sun_sid, moon_sid)  # 1..30
+        ni = _nak_idx_from_sid(moon_sid)            # 1..27
+        return {
+            "tithi_idx": ti,
+            "tithi_name": TITHI_NAMES[(ti - 1) % 30],
+            "paksha": "Shukla" if ti <= 15 else "Krishna",
+            "nak_idx": ni,
+            "nak_name": NAKSHATRA_NAMES[(ni - 1) % 27],
+        }
+
+    sr = snap(sunrise_utc)
+    pr = snap(pradosha_utc)
+    ns = snap(nishitha_utc)
+
+    # ✅ stable masa bounds (your amavasya finder)
+    last_am_utc, next_am_utc = _find_last_next_amavasya(fetch_sid, sunrise_utc)
+
+    sun_last_am, _ = fetch_sid(last_am_utc)
+    sun_next_am, _ = fetch_sid(next_am_utc)
+
+    masa_name = _masa_name_from_sun_sid(sun_last_am)
+    next_masa_name = _masa_name_from_sun_sid(sun_next_am)
+
+    adhika_masa = (masa_name == next_masa_name)
+
+    # NIJA detect using previous lunation
+    prevprev_am_utc, _ = _find_last_next_amavasya(fetch_sid, last_am_utc - timedelta(hours=1))
+    sun_prevprev_am, _ = fetch_sid(prevprev_am_utc)
+    prev_masa_name = _masa_name_from_sun_sid(sun_prevprev_am)
+    prev_adhika, _ = _detect_adhika_kshaya(fetch_sid, prevprev_am_utc, last_am_utc)
+    nija_masa = (not adhika_masa) and prev_adhika and (prev_masa_name == masa_name)
+
+    kshaya_masa = False  # (rare; can be added later using ingress-count method)
+
+    if kshaya_masa:
+        masa_type = "KSHAYA"
+    elif adhika_masa:
+        masa_type = "ADHIKA"
+    elif nija_masa:
+        masa_type = "NIJA"
+    else:
+        masa_type = "NORMAL"
+
+    return {
+        "date": local_d.isoformat(),
+        "tz": tz,
+        "lat": float(lat),
+        "lon": float(lon),
+
+        "sunrise_local": fmt_local(sunrise_local),
+        "sunset_local": fmt_local(sunset_local),
+        "pradosha_local": fmt_local(pradosha_utc.astimezone(zone)),
+        "nishitha_local": fmt_local(nishitha_utc.astimezone(zone)),
+
+        "at_sunrise": sr,
+        "at_pradosha": pr,
+        "at_nishitha": ns,
+
+        "masa_name": masa_name,
+        "masa_type": masa_type,
+        "adhika_masa": bool(adhika_masa),
+        "nija_masa": bool(nija_masa),
+        "kshaya_masa": bool(kshaya_masa),
+
+        "amavasya_prev_utc": last_am_utc.isoformat().replace("+00:00", "Z"),
+        "amavasya_next_utc": next_am_utc.isoformat().replace("+00:00", "Z"),
+        "ayan_mode": ayan_mode,
+        "ayan_deg": float(ayan_deg),
+    }

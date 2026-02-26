@@ -54,6 +54,8 @@ from app.core.vimshottari_tree import (
 )
 
 from app.core.panchangam_calc import compute_panchangam
+from app.routes.personal_daily_prediction import router as personal_pred_router
+app.include_router(personal_pred_router)
 
 # -------------------------------------------------
 # App
