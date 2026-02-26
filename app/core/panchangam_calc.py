@@ -480,18 +480,16 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         return hit
 
     zone = ZoneInfo(tz)
-
-try:
+    try:
     dt = datetime.fromisoformat(datetimeLocal.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt_local = dt.replace(tzinfo=zone)
-    else:
-        dt_local = dt.astimezone(zone)
-except Exception:
-    dt_local = datetime.now(tz=zone)
+if dt.tzinfo is None:
+    dt_local = dt.replace(tzinfo=zone)
+else:
+    dt_local = dt.astimezone(zone)
+    except Exception:
+        dt_local = datetime.now(tz=zone)
+    local_d = dt_local.date()
 
-local_d = dt_local.date()
-    
     sunrise_utc, sunset_utc = _sunrise_sunset_utc_for_local_date(local_d, tz, float(lat), float(lon))
     next_sunrise_utc, _ = _sunrise_sunset_utc_for_local_date(local_d + timedelta(days=1), tz, float(lat), float(lon))
 
