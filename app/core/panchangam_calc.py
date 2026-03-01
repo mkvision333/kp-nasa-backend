@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone, date
 from zoneinfo import ZoneInfo
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple, List, Optional
 import math
 import time
 
@@ -65,17 +65,6 @@ _RAHU_IDX = {"Sunday": 8, "Monday": 2, "Tuesday": 7, "Wednesday": 5, "Thursday":
 _YAMA_IDX = {"Sunday": 5, "Monday": 4, "Tuesday": 3, "Wednesday": 2, "Thursday": 1, "Friday": 7, "Saturday": 6}
 _GULI_IDX = {"Sunday": 7, "Monday": 6, "Tuesday": 5, "Wednesday": 4, "Thursday": 3, "Friday": 2, "Saturday": 1}
 
-# Durmuhurta muhurtas (sunrise->sunset divided into 15 muhurtas)
-_DUR_MUHURTA_MUHURTA_IDX: Dict[str, List[int]] = {
-    "Sunday": [4],
-    "Monday": [8],
-    "Tuesday": [3, 8],
-    "Wednesday": [7],
-    "Thursday": [6],
-    "Friday": [4],
-    "Saturday": [2, 6],
-}
-
 # Lunar month by Sun rashi (approx, Amanta-ish)
 LUNAR_MONTH_BY_SUN_RASHI = {
     11: "Chaitra",      # Pisces
@@ -92,7 +81,8 @@ LUNAR_MONTH_BY_SUN_RASHI = {
     10: "Phalguna",     # Aquarius
 }
 
-# ✅ Varjya (Nakshatra Thyajyam) ghati ranges (0..60 ghatis)
+# ✅ Varjya (Nakshatra Thyajyam) ghati ranges (0..60 ghatis) (Ashwini..Revati)
+# start_ghati, end_ghati (scaled to each nakshatra segment duration)
 _VARJYA_GHATI: List[Tuple[int, int]] = [
     (51,54), (25,28), (31,34), (41,44), (15,18), (22,25), (31,34), (21,24), (33,36),
     (31,34), (21,24), (19,22), (22,25), (21,24), (15,18), (15,18), (11,14), (15,18),
@@ -117,7 +107,6 @@ _PANCH_CACHE: Dict[str, Dict[str, Any]] = {}
 _PANCH_TTL_SEC = 12 * 60 * 60  # 12 hours
 
 def _panch_key(datetimeLocal: str, tz: str, lat: float, lon: float, ayan_deg: float) -> str:
-    # ✅ include full datetimeLocal (not just date)
     return f"{datetimeLocal}|{tz}|{float(lat):.4f}|{float(lon):.4f}|{float(ayan_deg):.6f}"
 
 def _cache_get(key: str):
@@ -168,17 +157,43 @@ def _abhijit(sunrise_utc: datetime, sunset_utc: datetime) -> Tuple[datetime, dat
     span = (sunset_utc - sunrise_utc) / 15  # 1 muhurta
     return mid - span / 2, mid + span / 2
 
-def _durmuhurta_spans(sunrise_utc: datetime, sunset_utc: datetime, vaara: str) -> List[Tuple[datetime, datetime]]:
-    idxs = _DUR_MUHURTA_MUHURTA_IDX.get(vaara, [])
-    if not idxs:
-        return []
-    day_len = (sunset_utc - sunrise_utc)
-    muhurta = day_len / 15
+def _clip_window(a: datetime, b: datetime, lo: datetime, hi: datetime) -> Optional[Tuple[datetime, datetime]]:
+    s = max(a, lo)
+    e = min(b, hi)
+    if e <= s:
+        return None
+    return (s, e)
+
+# ---------------------------
+# ✅ FIXED Durmuhurtham (weekday offsets; sunrise/sunset anchors)
+# ---------------------------
+def _hm(h: int, m: int) -> timedelta:
+    return timedelta(hours=h, minutes=m)
+
+# Python weekday: Mon=0..Sun=6
+_DURMUHURTA_RULES = {
+    6: [("sunrise", _hm(10,24), _hm(0,48))],                                 # Sunday
+    0: [("sunrise", _hm(6,24),  _hm(0,48)), ("sunrise", _hm(8,48), _hm(0,48))],  # Monday
+    1: [("sunrise", _hm(2,24),  _hm(0,48)), ("sunset",  _hm(5,36), _hm(0,48))],  # Tuesday
+    2: [("sunrise", _hm(5,36),  _hm(0,48))],                                 # Wednesday
+    3: [("sunrise", _hm(4,0),   _hm(0,48)), ("sunrise", _hm(8,48), _hm(0,48))],  # Thursday
+    4: [("sunrise", _hm(2,24),  _hm(0,48)), ("sunrise", _hm(8,48), _hm(0,48))],  # Friday
+    5: [("sunrise", _hm(0,0),   _hm(1,36))],                                 # Saturday
+}
+
+def _durmuhurta_spans_fixed(sunrise_utc: datetime, sunset_utc: datetime, day_start: datetime, day_end: datetime) -> List[Tuple[datetime, datetime]]:
+    wd = sunrise_utc.astimezone(timezone.utc).astimezone(timezone.utc).weekday()  # safe
+    # NOTE: weekday based on local sunrise day; sunrise_utc is already for local date.
+    wd = sunrise_utc.astimezone(ZoneInfo("Asia/Kolkata")).weekday()  # India-centric app; stable for IST
+    rules = _DURMUHURTA_RULES.get(wd, [])
     out: List[Tuple[datetime, datetime]] = []
-    for i in idxs:
-        a = sunrise_utc + muhurta * (i - 1)
-        b = a + muhurta
-        out.append((a, b))
+    for anchor, offset, dur in rules:
+        base = sunrise_utc if anchor == "sunrise" else sunset_utc
+        a = base + offset
+        b = a + dur
+        c = _clip_window(a, b, day_start, day_end)
+        if c:
+            out.append(c)
     return out
 
 # ---------------------------
@@ -252,16 +267,10 @@ def _sunrise_sunset_utc_for_local_date(local_d: date, tz: str, lat: float, lon: 
     sunset_utc = base + timedelta(minutes=float(sunset_min))
 
     if sunrise_utc.astimezone(zone).date() != local_d:
-        if sunrise_utc.astimezone(zone).date() < local_d:
-            sunrise_utc += timedelta(days=1)
-        else:
-            sunrise_utc -= timedelta(days=1)
+        sunrise_utc += timedelta(days=1) if sunrise_utc.astimezone(zone).date() < local_d else timedelta(days=-1)
 
     if sunset_utc.astimezone(zone).date() != local_d:
-        if sunset_utc.astimezone(zone).date() < local_d:
-            sunset_utc += timedelta(days=1)
-        else:
-            sunset_utc -= timedelta(days=1)
+        sunset_utc += timedelta(days=1) if sunset_utc.astimezone(zone).date() < local_d else timedelta(days=-1)
 
     if sunset_utc <= sunrise_utc:
         local_mid = datetime(local_d.year, local_d.month, local_d.day, 0, 0, 0, tzinfo=zone)
@@ -342,11 +351,7 @@ def _samvatsara_from_vikrama(vikrama_year: int) -> Tuple[str, str]:
 # ---------------------------
 # Ultra-fast end-time estimation
 # ---------------------------
-def _estimate_crossing_time(
-    t0: datetime, v0: float,
-    t1: datetime, v1: float,
-    target: float
-) -> datetime:
+def _estimate_crossing_time(t0: datetime, v0: float, t1: datetime, v1: float, target: float) -> datetime:
     dt = (t1 - t0).total_seconds()
     if dt <= 0:
         return t1
@@ -368,10 +373,9 @@ def _refine_once(fetch_sid, t_est: datetime, target_fn, target: float, t0: datet
     return _estimate_crossing_time(a, va, b, vb, target)
 
 # ---------------------------
-# ✅ Amavasya finder (stable)  <-- NEW
+# ✅ Amavasya finder (stable)
 # ---------------------------
 def _unwrap_near(v: float, ref: float) -> float:
-    """Shift v by ±360 so it's closest to ref."""
     v = float(v)
     ref = float(ref)
     while (v - ref) > 180.0:
@@ -381,7 +385,6 @@ def _unwrap_near(v: float, ref: float) -> float:
     return v
 
 def _phase_unwrapped(fetch_sid, t_utc: datetime, ref: float, force_dir: str | None = None) -> float:
-    """Moon-Sun phase in degrees, unwrapped near ref."""
     s, m = fetch_sid(t_utc)
     raw = wrap360(m - s)  # 0..360
     v = _unwrap_near(raw, ref)
@@ -392,7 +395,6 @@ def _phase_unwrapped(fetch_sid, t_utc: datetime, ref: float, force_dir: str | No
     return v
 
 def _binary_crossing(fetch_sid, t_lo: datetime, p_lo: float, t_hi: datetime, p_hi: float, target: float) -> datetime:
-    """Assumes p_lo <= target <= p_hi."""
     lo_t, hi_t = t_lo, t_hi
     lo_p, hi_p = p_lo, p_hi
     for _ in range(40):
@@ -407,15 +409,10 @@ def _binary_crossing(fetch_sid, t_lo: datetime, p_lo: float, t_hi: datetime, p_h
     return hi_t
 
 def _find_last_next_amavasya(fetch_sid, t0: datetime) -> tuple[datetime, datetime]:
-    """
-    Find last & next amavasya around t0 using phase(Moon-Sun) crossing.
-    last: phase crosses 0 going backward
-    next: phase crosses 360 going forward
-    """
     s0, m0 = fetch_sid(t0)
     p0 = wrap360(m0 - s0)  # 0..360
 
-    # --- last amavasya (target 0) ---
+    # last (target 0)
     t_hi = t0
     p_hi = float(p0)
     found_last = False
@@ -427,11 +424,10 @@ def _find_last_next_amavasya(fetch_sid, t0: datetime) -> tuple[datetime, datetim
             last_am = _binary_crossing(fetch_sid, t_lo, p_lo, t_hi, p_hi, target=0.0)
             break
         t_hi, p_hi = t_lo, p_lo
-
     if not found_last:
         last_am = t0 - timedelta(days=15)
 
-    # --- next amavasya (target 360) ---
+    # next (target 360)
     t_lo2 = t0
     p_lo2 = float(p0)
     found_next = False
@@ -443,7 +439,6 @@ def _find_last_next_amavasya(fetch_sid, t0: datetime) -> tuple[datetime, datetim
             next_am = _binary_crossing(fetch_sid, t_lo2, p_lo2, t_hi2, p_hi2, target=360.0)
             break
         t_lo2, p_lo2 = t_hi2, p_hi2
-
     if not found_next:
         next_am = t0 + timedelta(days=15)
 
@@ -456,12 +451,6 @@ def _masa_name_from_sun_sid(sun_sid: float) -> str:
     return LUNAR_MONTH_BY_SUN_RASHI.get(_sun_rashi(sun_sid), "—")
 
 def _detect_adhika_kshaya(fetch_sid, prev_am_utc: datetime, next_am_utc: datetime) -> Tuple[bool, bool]:
-    """
-    Returns: (adhika_masa, kshaya_masa)
-    ✅ Rule:
-      - Adhika: rashi(prev_am) == rashi(next_am)
-      - Kshaya: not computed here (rare) => False
-    """
     sun_a, _ = fetch_sid(prev_am_utc)
     sun_b, _ = fetch_sid(next_am_utc)
     rA = _sun_rashi(sun_a)
@@ -469,6 +458,70 @@ def _detect_adhika_kshaya(fetch_sid, prev_am_utc: datetime, next_am_utc: datetim
     adhika = (rA == rB)
     kshaya = False
     return adhika, kshaya
+
+# ---------------------------
+# ✅ FIXED Varjyam: compute using nakshatra segments inside Hindu day (sunrise->next sunrise)
+# ---------------------------
+def _moon_unwrapped(fetch_sid, t_utc: datetime, ref: float) -> float:
+    _, m = fetch_sid(t_utc)
+    return _unwrap_near(m, ref)
+
+def _nak_idx_from_moon(moon_sid: float) -> int:
+    return int(math.floor(wrap360(moon_sid) / STAR_SPAN)) + 1  # 1..27
+
+def _nak_boundary_after(moon_sid: float) -> float:
+    return (math.floor(moon_sid / STAR_SPAN) + 1) * STAR_SPAN
+
+def _refine_cross_moon(fetch_sid, t_est: datetime, target: float, t0: datetime, t1: datetime, m0_ref: float) -> datetime:
+    def moon_fn(fetch, t):
+        _, mm = fetch(t)
+        return unwrap_forward(mm, m0_ref)
+    return _refine_once(fetch_sid, t_est, moon_fn, target, t0, t1)
+
+def _build_nak_segments(fetch_sid, day_start: datetime, day_end: datetime) -> List[Tuple[int, datetime, datetime]]:
+    """
+    Returns list of (nak_idx0based, seg_start_utc, seg_end_utc) covering [day_start, day_end]
+    Usually 1 or 2 segments.
+    """
+    _, m0 = fetch_sid(day_start)
+    _, m1 = fetch_sid(day_end)
+
+    m1u = unwrap_forward(m1, m0)
+
+    nak1 = _nak_idx_from_moon(m0)  # 1..27
+    nak0based = (nak1 - 1) % 27
+
+    target = _nak_boundary_after(m0)
+    if target <= m0:
+        target += STAR_SPAN
+
+    # estimate end
+    t_est = _estimate_crossing_time(day_start, m0, day_end, m1u, target)
+    t_end1 = _refine_cross_moon(fetch_sid, t_est, target, day_start, day_end, m0_ref=m0)
+
+    if t_end1 <= day_start or t_end1 >= day_end:
+        return [(nak0based, day_start, day_end)]
+
+    segs: List[Tuple[int, datetime, datetime]] = [(nak0based, day_start, t_end1)]
+
+    # second segment
+    nak2_0based = (nak0based + 1) % 27
+    segs.append((nak2_0based, t_end1, day_end))
+    return segs
+
+def _compute_varjyam_from_segments(nak_segments: List[Tuple[int, datetime, datetime]], day_start: datetime, day_end: datetime) -> List[Tuple[datetime, datetime]]:
+    out: List[Tuple[datetime, datetime]] = []
+    for nak_idx0, seg_s, seg_e in nak_segments:
+        if seg_e <= seg_s:
+            continue
+        g0, g1 = _VARJYA_GHATI[nak_idx0]
+        dur = seg_e - seg_s
+        a = seg_s + dur * (g0 / 60.0)
+        b = seg_s + dur * (g1 / 60.0)
+        c = _clip_window(a, b, day_start, day_end)
+        if c:
+            out.append(c)
+    return out
 
 # ---------------------------
 # MAIN
@@ -492,26 +545,27 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
 
     local_d = dt_local.date()
 
-    sunrise_utc, sunset_utc = _sunrise_sunset_utc_for_local_date(
-        local_d, tz, float(lat), float(lon)
-    )
-    next_sunrise_utc, _ = _sunrise_sunset_utc_for_local_date(
-        local_d + timedelta(days=1), tz, float(lat), float(lon)
-    )
+    # ✅ Hindu day bounds: sunrise (local date) -> next sunrise
+    sunrise_utc, sunset_utc = _sunrise_sunset_utc_for_local_date(local_d, tz, float(lat), float(lon))
+    next_sunrise_utc, _ = _sunrise_sunset_utc_for_local_date(local_d + timedelta(days=1), tz, float(lat), float(lon))
+
+    day_start_utc = sunrise_utc
+    day_end_utc = next_sunrise_utc
 
     sunrise_local = sunrise_utc.astimezone(zone)
     sunset_local = sunset_utc.astimezone(zone)
     next_sunrise_local = next_sunrise_utc.astimezone(zone)
 
     vaara = VAARA_EN[local_d.weekday()]
+
     # Kala blocks
     rahu_a, rahu_b = _kala_segment(sunrise_utc, sunset_utc, _RAHU_IDX.get(vaara, 2))
     yama_a, yama_b = _kala_segment(sunrise_utc, sunset_utc, _YAMA_IDX.get(vaara, 5))
     guli_a, guli_b = _kala_segment(sunrise_utc, sunset_utc, _GULI_IDX.get(vaara, 6))
     abhi_a, abhi_b = _abhijit(sunrise_utc, sunset_utc)
 
-    # Durmuhurtha
-    durm_spans = _durmuhurta_spans(sunrise_utc, sunset_utc, vaara)
+    # ✅ FIXED Durmuhurtham
+    durm_spans = _durmuhurta_spans_fixed(sunrise_utc, sunset_utc, day_start_utc, day_end_utc)
     durmuhurtha_list = [_fmt_span(zone, a, b) for (a, b) in durm_spans]
 
     # Choghadiya -> Amrita/Shubha windows
@@ -537,16 +591,15 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
     try:
         fetch_sid = _make_nasa_fetcher(float(lat), float(lon), float(ayan_deg))
 
-        # 2 anchor points: sunrise and next sunrise (24h)
-        sun0, moon0 = fetch_sid(sunrise_utc)
-        sun1, moon1 = fetch_sid(next_sunrise_utc)
+        # anchors: sunrise -> next sunrise
+        sun0, moon0 = fetch_sid(day_start_utc)
+        sun1, moon1 = fetch_sid(day_end_utc)
 
-        # unwrap continuous over 24h
         sun1u = unwrap_forward(sun1, sun0)
         moon1u = unwrap_forward(moon1, moon0)
 
         # derived angles at sunrise and +24h
-        d0 = wrap360(moon0 - sun0)  # Moon-Sun angle (0..360)
+        d0 = wrap360(moon0 - sun0)
         d1 = wrap360(moon1 - sun1)
         d1u = unwrap_forward(d1, d0)
 
@@ -562,14 +615,14 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         if tithi_target <= d0:
             tithi_target += TITHI_SPAN
 
-        tithi_end_utc = _estimate_crossing_time(sunrise_utc, d0, next_sunrise_utc, d1u, tithi_target)
+        tithi_end_utc = _estimate_crossing_time(day_start_utc, d0, day_end_utc, d1u, tithi_target)
 
         def tithi_fn(fetch, t):
             s, m = fetch(t)
             d = wrap360(m - s)
             return unwrap_forward(d, d0)
 
-        tithi_end_utc = _refine_once(fetch_sid, tithi_end_utc, tithi_fn, tithi_target, sunrise_utc, next_sunrise_utc)
+        tithi_end_utc = _refine_once(fetch_sid, tithi_end_utc, tithi_fn, tithi_target, day_start_utc, day_end_utc)
         tithi_end_local = tithi_end_utc.astimezone(zone)
 
         # ---- Nakshatra ----
@@ -579,13 +632,13 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         if nak_target <= moon0:
             nak_target += STAR_SPAN
 
-        nak_end_utc = _estimate_crossing_time(sunrise_utc, moon0, next_sunrise_utc, moon1u, nak_target)
+        nak_end_utc = _estimate_crossing_time(day_start_utc, moon0, day_end_utc, moon1u, nak_target)
 
         def moon_fn(fetch, t):
             _, m = fetch(t)
             return unwrap_forward(m, moon0)
 
-        nak_end_utc = _refine_once(fetch_sid, nak_end_utc, moon_fn, nak_target, sunrise_utc, next_sunrise_utc)
+        nak_end_utc = _refine_once(fetch_sid, nak_end_utc, moon_fn, nak_target, day_start_utc, day_end_utc)
         nak_end_local = nak_end_utc.astimezone(zone)
 
         # ---- Yoga ----
@@ -595,14 +648,14 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         if yoga_target <= y0:
             yoga_target += STAR_SPAN
 
-        yoga_end_utc = _estimate_crossing_time(sunrise_utc, y0, next_sunrise_utc, y1u, yoga_target)
+        yoga_end_utc = _estimate_crossing_time(day_start_utc, y0, day_end_utc, y1u, yoga_target)
 
         def yoga_fn(fetch, t):
             s, m = fetch(t)
             y = wrap360(m + s)
             return unwrap_forward(y, y0)
 
-        yoga_end_utc = _refine_once(fetch_sid, yoga_end_utc, yoga_fn, yoga_target, sunrise_utc, next_sunrise_utc)
+        yoga_end_utc = _refine_once(fetch_sid, yoga_end_utc, yoga_fn, yoga_target, day_start_utc, day_end_utc)
         yoga_end_local = yoga_end_utc.astimezone(zone)
 
         # ---- Karana ----
@@ -619,31 +672,13 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         if kar_target <= d0:
             kar_target += KARANA_SPAN
 
-        kar_end_utc = _estimate_crossing_time(sunrise_utc, d0, next_sunrise_utc, d1u, kar_target)
-        kar_end_utc = _refine_once(fetch_sid, kar_end_utc, tithi_fn, kar_target, sunrise_utc, next_sunrise_utc)
+        kar_end_utc = _estimate_crossing_time(day_start_utc, d0, day_end_utc, d1u, kar_target)
+        kar_end_utc = _refine_once(fetch_sid, kar_end_utc, tithi_fn, kar_target, day_start_utc, day_end_utc)
         kar_end_local = kar_end_utc.astimezone(zone)
 
-        # ---- Varjya from Nakshatra duration ----
-        nak_start_boundary = math.floor(moon0 / STAR_SPAN) * STAR_SPAN
-        prev_sunrise_utc = sunrise_utc - timedelta(days=1)
-        _, moon_prev = fetch_sid(prev_sunrise_utc)
-        m_prev = moon_prev
-        m_cur = moon0
-        m_cur_u = unwrap_forward(m_cur, m_prev)
-
-        nak_start_utc = sunrise_utc
-        if nak_start_boundary <= m_cur_u and nak_start_boundary >= m_prev:
-            nak_start_utc = _estimate_crossing_time(prev_sunrise_utc, m_prev, sunrise_utc, m_cur_u, nak_start_boundary)
-
-        nak_dur = (nak_end_utc - nak_start_utc)
-        varjya_sp: List[Tuple[datetime, datetime]] = []
-        if nak_dur.total_seconds() > 0:
-            g0, g1 = _VARJYA_GHATI[(nak_idx_1 - 1) % 27]
-            a = nak_start_utc + nak_dur * (g0 / 60.0)
-            b = nak_start_utc + nak_dur * (g1 / 60.0)
-            if b > a:
-                varjya_sp.append((a, b))
-
+        # ✅ ---- FIXED Varjyam: based on nakshatra segments within Hindu day ----
+        nak_segments = _build_nak_segments(fetch_sid, day_start_utc, day_end_utc)
+        varjya_sp = _compute_varjyam_from_segments(nak_segments, day_start_utc, day_end_utc)
         varjya_list = [_fmt_span(zone, a, b) for (a, b) in varjya_sp]
 
         # ---- Solar meta ----
@@ -651,11 +686,8 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
         ritu = _ritu_from_sun_rashi(sun_r)
         ayana = _ayana_from_sun_rashi(sun_r)
 
-        # ----------------------------
-        # ✅ Masa + Adhika/Nija (STABLE by real Amavasya bounds)
-        # ----------------------------
-        last_am_utc, next_am_utc = _find_last_next_amavasya(fetch_sid, sunrise_utc)
-
+        # ✅ Masa + Adhika/Nija (your stable amavasya logic)
+        last_am_utc, next_am_utc = _find_last_next_amavasya(fetch_sid, day_start_utc)
         sun_last_am, _ = fetch_sid(last_am_utc)
         sun_next_am, _ = fetch_sid(next_am_utc)
 
@@ -664,16 +696,13 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
 
         adhika_masa = (masa_name == next_masa_name)
 
-        # previous lunation (for NIJA detection)
         prevprev_am_utc, _ = _find_last_next_amavasya(fetch_sid, last_am_utc - timedelta(hours=1))
         sun_prevprev_am, _ = fetch_sid(prevprev_am_utc)
         prev_masa_name = _masa_name_from_sun_sid(sun_prevprev_am)
 
-        # If previous lunation was adhika and current repeats same masa_name, mark NIJA
         prev_adhika, _ = _detect_adhika_kshaya(fetch_sid, prevprev_am_utc, last_am_utc)
         nija_masa = (not adhika_masa) and prev_adhika and (prev_masa_name == masa_name)
 
-        # (kshaya not computed)
         kshaya_masa = False
 
         if kshaya_masa:
@@ -700,8 +729,8 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
             "vaara": vaara,
 
             "masa_name": masa_name,
-            "masa_type": masa_type,          # ADHIKA/NIJA/NORMAL/KSHAYA
-            "masa_display": masa_display,    # pre-formatted
+            "masa_type": masa_type,
+            "masa_display": masa_display,
             "adhika_masa": bool(adhika_masa),
             "nija_masa": bool(nija_masa),
             "kshaya_masa": bool(kshaya_masa),
@@ -720,6 +749,7 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
             "abhijit": _fmt_span(zone, abhi_a, abhi_b),
             "durmuhurtha": durmuhurtha_list,
 
+            # ✅ fixed windows
             "varjya": varjya_list,
             "varjya_kaal": varjya_list,
 
@@ -766,15 +796,15 @@ def compute_panchangam(datetimeLocal: str, tz: str, lat: float, lon: float, ayan
             "yoga": {"name": "—", "end_local": "", "end_hms": ""},
             "karana": {"name": "—", "end_local": "", "end_hms": ""},
 
-            "note": f"Fallback panchangam (no NASA). {note_extra}"
+            "note": f"Fallback panchangam (no NASA). {note_extra}",
         }
         _cache_set(key, out)
         return out
-    
 
+# ---------------------------
+# compute_day_base (kept)
+# ---------------------------
 def _jd_ut_from_dt(dt_utc: datetime) -> float:
-    # Julian day UT (simple & sufficient here)
-    # Algorithm: Fliegel–Van Flandern style
     y = dt_utc.year
     m = dt_utc.month
     d = dt_utc.day + (dt_utc.hour + dt_utc.minute/60 + dt_utc.second/3600) / 24.0
@@ -788,16 +818,16 @@ def _jd_ut_from_dt(dt_utc: datetime) -> float:
 
 def _tithi_idx_from_sid(sun_sid: float, moon_sid: float) -> int:
     d = wrap360(moon_sid - sun_sid)
-    return int(math.floor(d / TITHI_SPAN)) + 1  # 1..30
+    return int(math.floor(d / TITHI_SPAN)) + 1
 
 def _nak_idx_from_sid(moon_sid: float) -> int:
-    return int(math.floor(wrap360(moon_sid) / STAR_SPAN)) + 1  # 1..27
+    return int(math.floor(wrap360(moon_sid) / STAR_SPAN)) + 1
 
 def compute_day_base(local_d: date, tz: str, lat: float, lon: float, ayan_mode: str = "KP_OLD") -> Dict[str, Any]:
     """
     ✅ Batch-safe day base:
     - sunrise/pradosha/nishitha tithi+nakshatra
-    - masa + adhika/nija bounds (your stable amavasya logic)
+    - masa + adhika/nija bounds (stable amavasya logic)
     - NO global cache use (so generation is correct)
     """
     zone = ZoneInfo(tz)
@@ -809,18 +839,16 @@ def compute_day_base(local_d: date, tz: str, lat: float, lon: float, ayan_mode: 
     sunset_local = sunset_utc.astimezone(zone)
 
     # decision points
-    pradosha_utc = sunset_utc + timedelta(minutes=60)                 # sunset + 1h
-    nishitha_utc = sunset_utc + (next_sunrise_utc - sunset_utc) / 2   # night midpoint
+    pradosha_utc = sunset_utc + timedelta(minutes=60)
+    nishitha_utc = sunset_utc + (next_sunrise_utc - sunset_utc) / 2
 
-    # ayanamsa at sunrise UT (good enough for day; you can also do at each point)
     ayan_deg = get_ayanamsa_deg(_jd_ut_from_dt(sunrise_utc), ayan_mode)
-
     fetch_sid = _make_nasa_fetcher(float(lat), float(lon), float(ayan_deg))
 
     def snap(dt_utc: datetime) -> Dict[str, Any]:
         sun_sid, moon_sid = fetch_sid(dt_utc)
-        ti = _tithi_idx_from_sid(sun_sid, moon_sid)  # 1..30
-        ni = _nak_idx_from_sid(moon_sid)            # 1..27
+        ti = _tithi_idx_from_sid(sun_sid, moon_sid)
+        ni = _nak_idx_from_sid(moon_sid)
         return {
             "tithi_idx": ti,
             "tithi_name": TITHI_NAMES[(ti - 1) % 30],
@@ -833,7 +861,6 @@ def compute_day_base(local_d: date, tz: str, lat: float, lon: float, ayan_mode: 
     pr = snap(pradosha_utc)
     ns = snap(nishitha_utc)
 
-    # ✅ stable masa bounds (your amavasya finder)
     last_am_utc, next_am_utc = _find_last_next_amavasya(fetch_sid, sunrise_utc)
 
     sun_last_am, _ = fetch_sid(last_am_utc)
@@ -844,14 +871,13 @@ def compute_day_base(local_d: date, tz: str, lat: float, lon: float, ayan_mode: 
 
     adhika_masa = (masa_name == next_masa_name)
 
-    # NIJA detect using previous lunation
     prevprev_am_utc, _ = _find_last_next_amavasya(fetch_sid, last_am_utc - timedelta(hours=1))
     sun_prevprev_am, _ = fetch_sid(prevprev_am_utc)
     prev_masa_name = _masa_name_from_sun_sid(sun_prevprev_am)
     prev_adhika, _ = _detect_adhika_kshaya(fetch_sid, prevprev_am_utc, last_am_utc)
     nija_masa = (not adhika_masa) and prev_adhika and (prev_masa_name == masa_name)
 
-    kshaya_masa = False  # (rare; can be added later using ingress-count method)
+    kshaya_masa = False
 
     if kshaya_masa:
         masa_type = "KSHAYA"
